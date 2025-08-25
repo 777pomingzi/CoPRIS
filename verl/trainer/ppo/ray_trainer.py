@@ -1040,6 +1040,8 @@ class RayPPOTrainer:
         )
         metrics.update(global_balance_stats)
 
+        return global_idx
+
     def fit(self):
         """
         The training loop of PPO.
@@ -1117,8 +1119,8 @@ class RayPPOTrainer:
                 gen_batch = self._get_gen_batch(batch)
 
                 # pass global_steps to trace 
-                gids = np.tile(np.arange(self.config.actor_rollout_ref.rollout.n), len(gen_batch))
                 gen_batch.meta_info["global_steps"] = self.global_steps
+                gids = np.tile(np.arange(self.config.actor_rollout_ref.rollout.n), len(gen_batch))
                 gen_batch = gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                 gen_batch.non_tensor_batch["gid"] = gids
                 
@@ -1165,9 +1167,12 @@ class RayPPOTrainer:
 
                             metrics.update(calculate_debug_metrics(batch))
 
+                    dropped_uids = gen_batch_output.meta_info['dropped_prompt_uids']
                     for i, (uid, gid, response_mask) in enumerate(
                         zip(gen_batch_output.non_tensor_batch["uid"], gen_batch_output.non_tensor_batch["gid"], gen_batch_output.batch["response_mask"])
                     ):
+                        if uid in dropped_uids:
+                            continue
                         resp = gen_batch_output[i:i+1]
                         old_log_prob = resp.batch["old_log_probs"]
                         self.uid2response[uid][gid] = resp
@@ -1180,7 +1185,7 @@ class RayPPOTrainer:
                             else:
                                 self.uid2old_log_prob[uid][gid] = torch.cat((self.uid2old_log_prob[uid][gid], old_log_prob[:,self.uid2old_log_prob[uid][gid].shape[1]:]),dim=-1)
 
-                    for uid in gen_batch_output.meta_info['dropped_prompt_uids']:
+                    for uid in dropped_uids:
                         if uid in self.uid2old_log_prob:
                             self.uid2old_log_prob.pop(uid)
                         if uid in self.uid2response:
@@ -1191,7 +1196,7 @@ class RayPPOTrainer:
                     train_batch = []
                     train_prompt = []
                     train_old_logp = []
-                    for uid in batch.meta_info['kept_prompt_uids']:
+                    for uid in gen_batch_output.meta_info['kept_prompt_uids']:
                         gid2resp = self.uid2response.pop(uid)
                         gid2old_logp = self.uid2old_log_prob.pop(uid)
                         train_prompt.append(self.uid2prompt.pop(uid))

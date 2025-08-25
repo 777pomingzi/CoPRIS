@@ -466,7 +466,7 @@ class AgentLoopWorker:
 
         for i in range(min(self.partial_rollout_pool_size, len(self.unfinished_kwargs))):
             kwargs = self.unfinished_kwargs[i]
-            running.add(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
+            running.add(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, **kwargs)))
             next_idx += 1
 
         while True:
