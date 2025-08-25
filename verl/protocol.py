@@ -66,6 +66,31 @@ class DataProtoConfig(metaclass=_DataProtoConfigMeta):
 
 _padding_size_key = "_padding_size_key_x123d"
 
+def unpad_dataproto_with_indices(data: "DataProto", pad_indices: List[int]):
+    if pad_indices:
+        keep_indices = [i for i in range(len(data)) if i not in pad_indices]
+        data.reorder(torch.tensor(keep_indices))
+    return data
+
+def pad_dataproto_to_divisor_with_indices(data: "DataProto", size_divisor: int):
+    assert isinstance(data, DataProto), "data must be a DataProto"
+    pad_indices = []
+    if len(data) % size_divisor != 0:
+        pad_size = size_divisor - len(data) % size_divisor
+        padding_protos = []
+        remaining_pad = pad_size
+        current_len = len(data)
+        while remaining_pad > 0:
+            take_size = min(remaining_pad, len(data))
+            padding_protos.append(data[:take_size])
+            pad_indices.extend(range(current_len, current_len + take_size))
+            current_len += take_size              
+            remaining_pad -= take_size
+        data_padded = DataProto.concat([data] + padding_protos)
+    else:
+        data_padded = data
+        pad_indices = []
+    return data_padded, pad_indices
 
 def pad_dataproto_to_divisor(data: "DataProto", size_divisor: int):
     """Pad a DataProto to size divisible by size_divisor

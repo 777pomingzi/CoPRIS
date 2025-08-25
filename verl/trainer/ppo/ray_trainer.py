@@ -39,7 +39,7 @@ from tqdm import tqdm
 
 from verl import DataProto
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
-from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
+from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto, pad_dataproto_to_divisor_with_indices, unpad_dataproto_with_indices
 from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 from verl.single_controller.ray.base import create_colocated_worker_cls
@@ -343,6 +343,9 @@ class RayPPOTrainer:
         self.config = config
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
+        self.uid2old_log_prob = defaultdict(dict)
+        self.uid2prompt = defaultdict()
+        self.uid2response = defaultdict(dict)
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, "Currently, only support hybrid engine"
@@ -625,6 +628,24 @@ class RayPPOTrainer:
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
+    def _get_gen_batch(self, batch: DataProto) -> DataProto:
+        reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
+
+        # pop those keys for generation
+        batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+        non_tensor_batch_keys_to_pop = set(batch.non_tensor_batch.keys()) - reward_model_keys
+        gen_batch = batch.pop(
+            batch_keys=batch_keys_to_pop,
+            non_tensor_batch_keys=list(non_tensor_batch_keys_to_pop),
+        )
+
+        # For agent loop, we need reward model keys to compute score.
+        if self.async_rollout_mode:
+            gen_batch.non_tensor_batch.update(batch.non_tensor_batch)
+
+        return gen_batch
+
+
     def _validate(self):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
@@ -659,23 +680,7 @@ class RayPPOTrainer:
             ]
             sample_gts.extend(ground_truths)
 
-            batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
-            non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
-            if "multi_modal_data" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("multi_modal_data")
-            if "raw_prompt" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("raw_prompt")
-            if "tools_kwargs" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("tools_kwargs")
-            if "interaction_kwargs" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("interaction_kwargs")
-            if "agent_name" in test_batch.non_tensor_batch:
-                non_tensor_batch_keys_to_pop.append("agent_name")
-            test_gen_batch = test_batch.pop(
-                batch_keys=batch_keys_to_pop,
-                non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
-            )
-
+            test_gen_batch = self._get_gen_batch(test_batch)
             test_gen_batch.meta_info = {
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
@@ -1106,32 +1111,17 @@ class RayPPOTrainer:
                 batch.non_tensor_batch["uid"] = np.array(
                     [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                 )
+                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                    self.uid2prompt[uid] = batch[i:i+1]
+                
+                gen_batch = self._get_gen_batch(batch)
 
-                # pop those keys for generation
-                batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
-                non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
-                if "multi_modal_data" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("multi_modal_data")
-                if "raw_prompt" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("raw_prompt")
-                if "tools_kwargs" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("tools_kwargs")
-                if "interaction_kwargs" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("interaction_kwargs")
-                if "index" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("index")
-                if "agent_name" in batch.non_tensor_batch:
-                    non_tensor_batch_keys_to_pop.append("agent_name")
-
-                gen_batch = batch.pop(
-                    batch_keys=batch_keys_to_pop,
-                    non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
-                )
-
-                # pass global_steps to trace
+                # pass global_steps to trace 
+                gids = np.tile(np.arange(self.config.actor_rollout_ref.rollout.n), len(gen_batch))
                 gen_batch.meta_info["global_steps"] = self.global_steps
                 gen_batch = gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-
+                gen_batch.non_tensor_batch["gid"] = gids
+                
                 is_last_step = self.global_steps >= self.total_training_steps
 
                 with marked_timer("step", timing_raw):
@@ -1143,6 +1133,94 @@ class RayPPOTrainer:
                             gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch)
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+
+                    if "response_mask" not in gen_batch_output.batch.keys():
+                        gen_batch_output.batch["response_mask"] = compute_response_mask(gen_batch_output)
+
+                    # recompute old_log_probs
+                    with marked_timer("old_log_prob", timing_raw, color="blue"):
+                        gen_batch_output, pad_indices = pad_dataproto_to_divisor_with_indices(gen_batch_output, self.actor_rollout_wg.world_size)
+
+                        if self.config.trainer.balance_batch:
+                            reorder_idx = self._balance_batch(gen_batch_output, metrics=metrics)
+                            new_pad_indices = [new_idx for new_idx, old_idx in enumerate(reorder_idx.tolist()) if old_idx in pad_indices]
+                            pad_indices = new_pad_indices  
+                        
+                        old_log_prob = self.actor_rollout_wg.compute_log_prob(gen_batch_output)
+                        gen_batch_output = unpad_dataproto_with_indices(gen_batch_output, pad_indices)
+                        old_log_prob = unpad_dataproto_with_indices(old_log_prob, pad_indices)
+                        
+                        entropys = old_log_prob.batch["entropys"]
+                        response_masks = gen_batch_output.batch["response_mask"]
+                        loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
+                        entropy_agg = agg_loss(loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
+                        old_log_prob_metrics = {"actor/entropy": entropy_agg.detach().item()}
+                        metrics.update(old_log_prob_metrics)
+                        old_log_prob.batch.pop("entropys")
+                        gen_batch_output = gen_batch_output.union(old_log_prob)
+
+                        if "rollout_log_probs" in batch.batch.keys():
+                            # TODO: we may want to add diff of probs too.
+                            from verl.utils.debug.metrics import calculate_debug_metrics
+
+                            metrics.update(calculate_debug_metrics(batch))
+
+                    for i, (uid, gid, response_mask) in enumerate(
+                        zip(gen_batch_output.non_tensor_batch["uid"], gen_batch_output.non_tensor_batch["gid"], gen_batch_output.batch["response_mask"])
+                    ):
+                        resp = gen_batch_output[i:i+1]
+                        old_log_prob = resp.batch["old_log_probs"]
+                        self.uid2response[uid][gid] = resp
+                        old_log_prob = old_log_prob[:, response_mask == 1]
+                        if uid not in self.uid2old_log_prob:
+                            self.uid2old_log_prob[uid][gid] = old_log_prob
+                        else:
+                            if gid not in self.uid2old_log_prob[uid]:
+                                self.uid2old_log_prob[uid][gid] = old_log_prob
+                            else:
+                                self.uid2old_log_prob[uid][gid] = torch.cat((self.uid2old_log_prob[uid][gid], old_log_prob[:,self.uid2old_log_prob[uid][gid].shape[1]:]),dim=-1)
+
+                    for uid in gen_batch_output.meta_info['dropped_prompt_uids']:
+                        if uid in self.uid2old_log_prob:
+                            self.uid2old_log_prob.pop(uid)
+                        if uid in self.uid2response:
+                            self.uid2response.pop(uid)
+                        if uid in self.uid2prompt:
+                            self.uid2prompt.pop(uid)
+                    
+                    train_batch = []
+                    train_prompt = []
+                    train_old_logp = []
+                    for uid in batch.meta_info['kept_prompt_uids']:
+                        gid2resp = self.uid2response.pop(uid)
+                        gid2old_logp = self.uid2old_log_prob.pop(uid)
+                        train_prompt.append(self.uid2prompt.pop(uid))
+                        for gid in range(self.config.actor_rollout_ref.rollout.n):
+                            train_batch.append(gid2resp[gid])
+                            train_old_logp.append(gid2old_logp[gid].squeeze(0))
+                    train_prompt = DataProto.concat(train_prompt)
+                    train_prompt = train_prompt.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    train_batch = DataProto.concat(train_batch)
+                    train_batch = train_batch.union(train_prompt)
+
+                    from torch.nn.utils.rnn import pad_sequence
+                    def pad_to_fixed_length(sequences, max_len, padding_value=0.0):
+                        padded = pad_sequence(sequences, batch_first=True, padding_value=padding_value)
+
+                        if padded.size(1) > max_len:
+                            padded = padded[:, :max_len]
+                        elif padded.size(1) < max_len:
+                            pad_size = max_len - padded.size(1)
+                            pad_tensor = torch.full((padded.size(0), pad_size), padding_value, dtype=padded.dtype)
+                            padded = torch.cat([padded, pad_tensor], dim=1)
+                        
+                        return padded 
+                    train_old_logp = pad_to_fixed_length(train_old_logp, self.config.data.max_response_length)
+                    train_batch.batch['old_log_probs'] = train_old_logp
+                    batch = train_batch
+
+                    if self.config.trainer.balance_batch:
+                        self._balance_batch(batch, metrics=metrics)
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         if self.reward_fn is None:
@@ -1165,51 +1243,19 @@ class RayPPOTrainer:
 
                             del gen_baseline_batch, gen_baseline_output
 
-                    # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    batch = batch.union(gen_batch_output)
-
-                    if "response_mask" not in batch.batch.keys():
-                        batch.batch["response_mask"] = compute_response_mask(batch)
-                    # Balance the number of valid tokens across DP ranks.
-                    # NOTE: This usually changes the order of data in the `batch`,
-                    # which won't affect the advantage calculation (since it's based on uid),
-                    # but might affect the loss calculation (due to the change of mini-batching).
-                    # TODO: Decouple the DP balancing and mini-batching.
-                    if self.config.trainer.balance_batch:
-                        self._balance_batch(batch, metrics=metrics)
-
-                    # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
                     with marked_timer("reward", timing_raw, color="yellow"):
                         # compute reward model score
-                        if self.use_rm:
-                            reward_tensor = self.rm_wg.compute_rm_score(batch)
-                            batch = batch.union(reward_tensor)
+                        if "rm_scores" not in batch.batch:
+                            if self.use_rm:
+                                reward_tensor = self.rm_wg.compute_rm_score(batch)
+                                batch = batch.union(reward_tensor)
 
-                        if self.config.reward_model.launch_reward_fn_async:
-                            future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
-                        else:
-                            reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-
-                    # recompute old_log_probs
-                    with marked_timer("old_log_prob", timing_raw, color="blue"):
-                        old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
-                        entropys = old_log_prob.batch["entropys"]
-                        response_masks = batch.batch["response_mask"]
-                        loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-                        entropy_agg = agg_loss(loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
-                        old_log_prob_metrics = {"actor/entropy": entropy_agg.detach().item()}
-                        metrics.update(old_log_prob_metrics)
-                        old_log_prob.batch.pop("entropys")
-                        batch = batch.union(old_log_prob)
-
-                        if "rollout_log_probs" in batch.batch.keys():
-                            # TODO: we may want to add diff of probs too.
-                            from verl.utils.debug.metrics import calculate_debug_metrics
-
-                            metrics.update(calculate_debug_metrics(batch))
+                            if self.config.reward_model.launch_reward_fn_async:
+                                future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
+                            else:
+                                reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
 
                     if self.use_reference_policy:
                         # compute reference log_prob

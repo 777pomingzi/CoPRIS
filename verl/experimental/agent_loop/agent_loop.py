@@ -18,6 +18,7 @@ import os
 import random
 from abc import ABC, abstractmethod
 from typing import Any, Optional
+from collections import defaultdict
 
 import hydra
 import numpy as np
@@ -31,6 +32,7 @@ from transformers import AutoProcessor, AutoTokenizer
 
 from verl.protocol import DataProto
 from verl.single_controller.ray.base import RayWorkerGroup
+from verl.trainer.ppo.reward import load_reward_manager
 from verl.utils import hf_processor, hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.model import compute_position_id_with_mask
@@ -86,6 +88,7 @@ class AsyncLLMServerManager:
         prompt_ids: list[int],
         sampling_params: dict[str, Any],
         image_data: Optional[list[Any]] = None,
+        stream: bool =False,
     ) -> list[int]:
         """Generate tokens from prompt ids.
 
@@ -103,6 +106,7 @@ class AsyncLLMServerManager:
             prompt_ids=prompt_ids,
             sampling_params=sampling_params,
             image_data=image_data,
+            stream=stream
         )
         return output
 
@@ -127,8 +131,13 @@ class AgentLoopOutput(BaseModel):
     """Multi-modal data for multi-modal tools."""
     num_turns: int = 0
     """Number of chat turns, including user, assistant, tool."""
+    reward_score: Optional[float] = None
+    """Reward score for the trajectory."""
+    index: int
+    """"Index of the request. used for store unfinished request"""
     metrics: AgentLoopMetrics
     """Auxiliary performance metrics"""
+
 
 
 class _InternalAgentLoopOutput(AgentLoopOutput):
@@ -148,8 +157,14 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Padded response mask."""
     attention_mask: torch.Tensor
     """Padded attention mask."""
+    reward_score: Optional[float] = None
+    """Reward score for the trajectory."""
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
     """Multi-modal inputs for processors (e.g., pixel_values, image_grid_thw)."""
+    uid:int
+    """Index of prompt"""
+    gid:int
+    """Index of repsonse in group"""
 
 
 # make hydra.utils.instantiate happy
@@ -233,6 +248,55 @@ def register(agent_name: str):
 
     return decorator
 
+@ray.remote(num_cpus=1)
+class RewardManagerWorker:
+    """Reward manager worker to compute reward score asynchronously to overlap with agent loop."""
+
+    def __init__(self, config: DictConfig, local_path: str) -> None:
+        tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
+        self.reward_manager = load_reward_manager(
+            config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
+        )
+        self.loop = asyncio.get_event_loop()
+
+    async def compute_score(self, output: AgentLoopOutput, kwargs: dict) -> float:
+        """Compute reward score for agent loop output.
+
+        NOTE: Since `reward_manager.__call__` is blocking function, we run it in thread pool to
+        compute multiple samples in parallel.
+
+        Args:
+            output (AgentLoopOutput): Agent loop output.
+            kwargs (dict): Dataset fields from `verl.utils.dataset.RLHFDataset`.
+
+        Returns:
+            float: Reward score.
+        """
+        prompts = torch.tensor(output.prompt_ids, dtype=torch.long).unsqueeze(0)
+        responses = torch.tensor(output.response_ids, dtype=torch.long).unsqueeze(0)
+        attention_mask = torch.ones((1, prompts.shape[1] + responses.shape[1]), dtype=torch.long)
+        batch = TensorDict(
+            {
+                "prompts": prompts,  # [1, prompt_length]
+                "responses": responses,  # [1, response_length]
+                "attention_mask": attention_mask,  # [1, prompt_length + response_length]
+            },
+            batch_size=1,
+        )
+        non_tensor_batch = {
+            **{k: np.array([v]) for k, v in kwargs.items()},
+            "__num_turns__": np.array([output.num_turns]),
+        }
+        data = DataProto(
+            batch=batch,
+            non_tensor_batch=non_tensor_batch,
+        )
+        reward_tensor = await self.loop.run_in_executor(
+            None,
+            self.reward_manager,
+            data,
+        )
+        return reward_tensor.sum(dim=-1).item()
 
 @ray.remote
 class AgentLoopWorker:
@@ -253,6 +317,21 @@ class AgentLoopWorker:
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
         self.processor = hf_processor(local_path, trust_remote_code=True)
+        
+        self.reward_manager_worker = RewardManagerWorker.options(
+            scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                node_id=ray.get_runtime_context().get_node_id(),
+                soft=False,
+            ),
+        ).remote(self.config, local_path)
+
+
+        self.partial_rollout_pool_size = self.config.actor_rollout_ref.rollout.partial_rollout_pool_size
+        self.train_batch_size = config.data.train_batch_size
+        self.uid2reward = defaultdict(list)
+        self.unfinished_kwargs = []
+        self.kept_prompt_uids = []
+        self.dropped_prompt_uids = []
 
         agent_loop_config_path = config.actor_rollout_ref.rollout.agent.agent_loop_config_path
         if agent_loop_config_path:
@@ -271,6 +350,62 @@ class AgentLoopWorker:
             trace_config.get("backend"),
             trace_config.get("token2text", False),
         )
+
+    # async def generate_sequences(self, batch: DataProto) -> DataProto:
+    #     """Generate sequences from agent loop.
+
+    #     Args:
+    #         batch (DataProto): Input batch.
+
+    #     Returns:
+    #         DataProto: Output batch.
+    #         - prompts: [bsz, prompt_length], prompt token ids from dataset.
+    #         - responses: [bsz, response_length], output token ids include response tokens
+    #           from LLM generation and observation tokens from tool_calls.
+    #         - response_mask: [bsz, response_length], 1 for LLM generated tokens, 0 for observation/padding tokens.
+    #         - input_ids: [bsz, prompt_length + response_length], whole sequence token ids, including prompt tokens
+    #           and response tokens.
+    #         - attention_mask: [bsz, prompt_length + response_length], 0 for padding tokens, 1 for other tokens.
+    #         - position_ids: [bsz, prompt_length + response_length], incremental position ids.
+
+    #         For multi-turn conversations:
+    #         responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
+    #         response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
+    #     """
+    #     config = self.config.actor_rollout_ref.rollout
+    #     sampling_params = dict(
+    #         temperature=config.temperature,
+    #         top_p=config.top_p,
+    #         repetition_penalty=1.0,
+    #     )
+
+    #     # override sampling params for validation
+    #     if batch.meta_info.get("validate", False):
+    #         sampling_params["top_p"] = config.val_kwargs.top_p
+    #         sampling_params["temperature"] = config.val_kwargs.temperature
+
+    #     # by default, we assume it's a single turn agent
+    #     if "agent_name" not in batch.non_tensor_batch:
+    #         batch.non_tensor_batch["agent_name"] = np.array(["single_turn_agent"] * len(batch), dtype=object)
+
+    #     if "index" in batch.non_tensor_batch:
+    #         index = batch.non_tensor_batch["index"]
+    #     else:
+    #         index = np.arange(len(batch))
+
+
+    #     trajectory_info = await get_trajectory_info(
+    #         batch.meta_info.get("global_steps", -1), index, batch.meta_info.get("validate", False)
+    #     )
+
+    #     tasks = []
+    #     for i in range(len(batch)):
+    #         kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+    #         tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
+    #     outputs = await asyncio.gather(*tasks)
+
+    #     output = self._postprocess(outputs)
+    #     return output
 
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
@@ -314,27 +449,66 @@ class AgentLoopWorker:
         else:
             index = np.arange(len(batch))
 
+
         trajectory_info = await get_trajectory_info(
             batch.meta_info.get("global_steps", -1), index, batch.meta_info.get("validate", False)
         )
-
-        tasks = []
+        stop_event = asyncio.Event()  
+        next_idx = 0
+        running  = set()
+        prepare_running = set()
+        unfinished_kwargs = []
+        
+        stop_future = asyncio.create_task(stop_event.wait())
+        
         for i in range(len(batch)):
-            kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
-            tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
-        outputs = await asyncio.gather(*tasks)
+            self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items()})
 
+        for i in range(min(self.partial_rollout_pool_size, len(self.unfinished_kwargs))):
+            kwargs = self.unfinished_kwargs[i]
+            running.add(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
+            next_idx += 1
+
+        while True:
+            wait_set = running | {stop_future}
+            done, running = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+            
+            if stop_future in done:
+                for task in running:
+                    task.cancel()      
+                unfinished_outputs = await asyncio.gather(*running, return_exceptions=True) 
+                for unfinished_output in unfinished_outputs:  
+                    index = unfinished_output.index
+                    kwargs = self.unfinished_kwargs[index]
+                    unfinished_kwargs.append(kwargs)
+                    prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event, finished=False, **kwargs)))
+                break   
+
+            for task in done:
+                output = task.result()
+                if next_idx < len(self.unfinished_kwargs) and not stop_event.is_set():
+                    kwargs = self.unfinished_kwargs[next_idx]
+                    task = asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[next_idx], next_idx, **kwargs))
+                    running.add(task)
+                    next_idx += 1
+                index = output.index
+                kwargs = self.unfinished_kwargs[index]
+                prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event, finished=True, **kwargs)))
+
+        self.unfinished_kwargs = unfinished_kwargs+self.unfinished_kwargs[next_idx:]
+        outputs = await asyncio.gather(*prepare_running)
         output = self._postprocess(outputs)
         return output
-
+    
     async def _run_agent_loop(
         self,
         sampling_params: dict[str, Any],
         trajectory: dict[str, Any],
+        index: int,
         *,
         agent_name: str,
         **kwargs,
-    ) -> _InternalAgentLoopOutput:
+    ) -> AgentLoopOutput:
         with rollout_trace_attr(
             step=trajectory["step"],
             sample_index=trajectory["sample_index"],
@@ -342,122 +516,169 @@ class AgentLoopWorker:
             validate=trajectory["validate"],
             name="agent_loop",
         ):
-            assert agent_name in _agent_loop_registry, (
-                f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
-            )
+            task = None
+            try:
+                assert agent_name in _agent_loop_registry, (
+                    f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
+                )
 
-            agent_loop_config = _agent_loop_registry[agent_name]
-            agent_loop = hydra.utils.instantiate(
-                config=agent_loop_config,
-                trainer_config=_DummyConfig(config=self.config),
-                server_manager=self.server_manager,
-                tokenizer=self.tokenizer,
-                processor=self.processor,
-            )
-            output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
+                agent_loop_config = _agent_loop_registry[agent_name]
+                agent_loop = hydra.utils.instantiate(
+                    config=agent_loop_config,
+                    trainer_config=_DummyConfig(config=self.config),
+                    server_manager=self.server_manager,
+                    tokenizer=self.tokenizer,
+                    processor=self.processor,
+                )
 
-            # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
-            # prompt_ids: left padded with zeros (e.g., [0,0,0,0,1,2,3,4])
-            # response_ids: right padded with zeros (e.g., [5,6,7,8,0,0,0,0])
-            # input_ids: concatenation of prompt + response
-            # Mask:
-            # For example, if the prompt is [1,2,3,4] and the response is [5,6,7,(tool start)8,9(tool end),10,11,12]
-            # - prompt_attention_mask: 0s for padding, 1s for tokens
-            #   e.g., [0,0,0,0,1,1,1,1]
-            # - response_attention_mask: 0s for padding, 1s for tokens
-            #   e.g., [1,1,1,1,1,1,1,1,1,1,1,0,0,0,0]
-            # attention_mask: concatenation of prompt_attention_mask and response_attention_mask
-            #   e.g., [0,0,0,0,1,1,1,1(prompt),1,1,1,1,1,1,1,1,1,1,1,0,0,0,0(response)]
-            # - response_mask: 1s for LLM generated tokens, 0 for tool response/padding tokens
-            #   e.g., [1,1,1,1,1,1,1,(tool start),0,0(tool end),1,1,0,0,0,0]
-            # - position_ids: sequential positions for tokens, starting at 0
-            #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
+                task = asyncio.create_task(agent_loop.run(sampling_params, index, **kwargs))
+                output = await task
+                return output
 
-            self.tokenizer.padding_side = "left"
-            prompt_output = self.tokenizer.pad(
-                {"input_ids": output.prompt_ids},
-                padding="max_length",
-                max_length=self.config.actor_rollout_ref.rollout.prompt_length,
-                return_tensors="pt",
-                return_attention_mask=True,
-            )
-            if prompt_output["input_ids"].dim() == 1:
-                prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
-                prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
+            except asyncio.CancelledError:
+                if task is not None:
+                    task.cancel()
+                    output = await task
+                else:
+                    output = AgentLoopOutput(
+                        prompt_ids=[],
+                        response_ids=[],
+                        response_mask=[],
+                        multi_modal_data={},
+                        num_turns=0,
+                        index=index,
+                    )
+                return output
 
-            self.tokenizer.padding_side = "right"
-            response_output = self.tokenizer.pad(
-                {"input_ids": output.response_ids},
-                padding="max_length",
-                max_length=self.config.actor_rollout_ref.rollout.response_length,
-                return_tensors="pt",
-                return_attention_mask=True,
-            )
-            if response_output["input_ids"].dim() == 1:
-                response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
-                response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
+                
 
-            response_mask_output = self.tokenizer.pad(
-                {"input_ids": output.response_mask},
-                padding="max_length",
-                max_length=self.config.actor_rollout_ref.rollout.response_length,
-                return_tensors="pt",
-                return_attention_mask=False,
-            )
-            if response_mask_output["input_ids"].dim() == 1:
-                response_mask_output["input_ids"] = response_mask_output["input_ids"].unsqueeze(0)
+    async def prepare_internal_output(self, output: AgentLoopOutput, stop_event: asyncio.Event, finished: bool, **kwargs):
+        # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
+        # prompt_ids: left padded with zeros (e.g., [0,0,0,0,1,2,3,4])
+        # response_ids: right padded with zeros (e.g., [5,6,7,8,0,0,0,0])
+        # input_ids: concatenation of prompt + response
+        # Mask:
+        # For example, if the prompt is [1,2,3,4] and the response is [5,6,7,(tool start)8,9(tool end),10,11,12]
+        # - prompt_attention_mask: 0s for padding, 1s for tokens
+        #   e.g., [0,0,0,0,1,1,1,1]
+        # - response_attention_mask: 0s for padding, 1s for tokens
+        #   e.g., [1,1,1,1,1,1,1,1,1,1,1,0,0,0,0]
+        # attention_mask: concatenation of prompt_attention_mask and response_attention_mask
+        #   e.g., [0,0,0,0,1,1,1,1(prompt),1,1,1,1,1,1,1,1,1,1,1,0,0,0,0(response)]
+        # - response_mask: 1s for LLM generated tokens, 0 for tool response/padding tokens
+        #   e.g., [1,1,1,1,1,1,1,(tool start),0,0(tool end),1,1,0,0,0,0]
+        # - position_ids: sequential positions for tokens, starting at 0
+        #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
 
-            response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
-            attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
-            input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
+        self.tokenizer.padding_side = "left"
+        prompt_output = self.tokenizer.pad(
+            {"input_ids": output.prompt_ids},
+            padding="max_length",
+            max_length=self.config.actor_rollout_ref.rollout.prompt_length,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        if prompt_output["input_ids"].dim() == 1:
+            prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
+            prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
 
-            # Handle multi-modal inputs and position_ids calculation
-            # Only support Qwen2VLImageProcessor for multi-modal processing currently
-            # TODO: support other multi-modal inputs
-            multi_modal_inputs = None
-            if (
-                self.processor is not None
-                and "Qwen2VLImageProcessor" in self.processor.image_processor.__class__.__name__
-            ):
-                from verl.models.transformers.qwen2_vl import get_rope_index
+        self.tokenizer.padding_side = "right"
+        response_output = self.tokenizer.pad(
+            {"input_ids": output.response_ids},
+            padding="max_length",
+            max_length=self.config.actor_rollout_ref.rollout.response_length,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        if response_output["input_ids"].dim() == 1:
+            response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
+            response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
 
-                images = output.multi_modal_data.get("image", None)
-                current_text = self.tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
-                multi_modal_inputs = self.processor(text=[current_text], images=images, return_tensors="pt")
-                multi_modal_inputs.pop("input_ids", None)
-                multi_modal_inputs.pop("attention_mask", None)
+        response_mask_output = self.tokenizer.pad(
+            {"input_ids": output.response_mask},
+            padding="max_length",
+            max_length=self.config.actor_rollout_ref.rollout.response_length,
+            return_tensors="pt",
+            return_attention_mask=False,
+        )
+        if response_mask_output["input_ids"].dim() == 1:
+            response_mask_output["input_ids"] = response_mask_output["input_ids"].unsqueeze(0)
 
-                # We must use dict(multi_modal_inputs) to convert BatchFeature values to a new dict
-                # because np.array() only keeps the keys for BatchFeature.
-                multi_modal_inputs = dict(multi_modal_inputs)
+        response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
+        attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
+        input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
 
-                image_grid_thw = multi_modal_inputs.get("image_grid_thw")
-                video_grid_thw = multi_modal_inputs.get("video_grid_thw")
-                second_per_grid_ts = multi_modal_inputs.get("second_per_grid_ts")
+        # Handle multi-modal inputs and position_ids calculation
+        # Only support Qwen2VLImageProcessor for multi-modal processing currently
+        # TODO: support other multi-modal inputs
+        multi_modal_inputs = None
+        if (
+            self.processor is not None
+            and "Qwen2VLImageProcessor" in self.processor.image_processor.__class__.__name__
+        ):
+            from verl.models.transformers.qwen2_vl import get_rope_index
 
-                position_ids = get_rope_index(
-                    self.processor,
-                    input_ids=input_ids.squeeze(0),
-                    image_grid_thw=image_grid_thw,
-                    video_grid_thw=video_grid_thw,
-                    second_per_grid_ts=second_per_grid_ts,
-                    attention_mask=attention_mask.squeeze(0),
-                ).unsqueeze(0)  # (1, 3, seq_len)
-            else:
-                position_ids = compute_position_id_with_mask(attention_mask)  # (1, seq_len)
+            images = output.multi_modal_data.get("image", None)
+            current_text = self.tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
+            multi_modal_inputs = self.processor(text=[current_text], images=images, return_tensors="pt")
+            multi_modal_inputs.pop("input_ids", None)
+            multi_modal_inputs.pop("attention_mask", None)
 
-            return _InternalAgentLoopOutput(
-                prompt_ids=prompt_output["input_ids"],
-                response_ids=response_output["input_ids"],
-                input_ids=input_ids,
-                position_ids=position_ids,
-                response_mask=response_mask,
-                attention_mask=attention_mask,
-                multi_modal_inputs=multi_modal_inputs,
-                multi_modal_data=output.multi_modal_data,
-                num_turns=output.num_turns,
-                metrics=output.metrics,
-            )
+            # We must use dict(multi_modal_inputs) to convert BatchFeature values to a new dict
+            # because np.array() only keeps the keys for BatchFeature.
+            multi_modal_inputs = dict(multi_modal_inputs)
+
+            image_grid_thw = multi_modal_inputs.get("image_grid_thw")
+            video_grid_thw = multi_modal_inputs.get("video_grid_thw")
+            second_per_grid_ts = multi_modal_inputs.get("second_per_grid_ts")
+
+            position_ids = get_rope_index(
+                self.processor,
+                input_ids=input_ids.squeeze(0),
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                second_per_grid_ts=second_per_grid_ts,
+                attention_mask=attention_mask.squeeze(0),
+            ).unsqueeze(0)  # (1, 3, seq_len)
+        else:
+            position_ids = compute_position_id_with_mask(attention_mask)  # (1, seq_len)
+
+
+        uid = kwargs["uid"]
+        gid = kwargs["gid"]
+        if not finished:
+            output.reward_score = 0
+        else:
+            if output.reward_score is None and not self.config.reward_model.enable:
+                output.reward_score = await self.reward_manager_worker.compute_score.remote(output, kwargs)
+            self.uid2reward[uid].append(output.reward_score)
+            n = self.config.actor_rollout_ref.rollout.n
+            if len(self.uid2reward[uid]) == n:
+                finished_rewards = self.uid2reward.pop(uid)
+                identical = len(set(finished_rewards)) == 1
+                if not (getattr(self.config, "filter_groups", False) and identical):
+                    self.kept_prompt_uids.append(uid)
+                else:
+                    self.dropped_prompt_uids.append(uid)
+
+                if len(self.kept_prompt_uids) >= self.train_batch_size:
+                    stop_event.set()
+
+        return _InternalAgentLoopOutput(
+            prompt_ids=prompt_output["input_ids"],
+            response_ids=response_output["input_ids"],
+            input_ids=input_ids,
+            position_ids=position_ids,
+            response_mask=response_mask,
+            attention_mask=attention_mask,
+            multi_modal_inputs=multi_modal_inputs,
+            multi_modal_data=output.multi_modal_data,
+            reward_score=output.reward_score,
+            num_turns=output.num_turns,
+            metrics=output.metrics,
+            uid=uid,
+            gid=gid
+        )
 
     def _postprocess(self, inputs: list[_InternalAgentLoopOutput]) -> DataProto:
         """Process the padded outputs from _run_agent_loop and combine them into a batch."""
@@ -468,6 +689,8 @@ class AgentLoopWorker:
         attention_mask = torch.cat([input.attention_mask for input in inputs], dim=0)
         input_ids = torch.cat([input.input_ids for input in inputs], dim=0)
         position_ids = torch.cat([input.position_ids for input in inputs], dim=0)
+        uids = np.array([input.uid for input in inputs])
+        gids = np.array([input.gid for input in inputs])
 
         batch = TensorDict(
             {
@@ -482,8 +705,18 @@ class AgentLoopWorker:
             batch_size=len(inputs),
         )
 
+        scores = [input.reward_score for input in inputs]
+        if all(score is not None for score in scores):
+            prompt_length = prompt_ids.size(1)
+            response_length = attention_mask[:, prompt_length:].sum(dim=1) - 1
+            rm_scores = torch.zeros_like(response_mask, dtype=torch.float32)
+            rm_scores[torch.arange(response_mask.size(0)), response_length] = torch.tensor(scores, dtype=torch.float32)
+            batch["rm_scores"] = rm_scores
+
         non_tensor_batch = {
             "__num_turns__": np.array([input.num_turns for input in inputs], dtype=np.int32),
+            "uids": uids,
+            "gids":gids
         }
 
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
@@ -492,7 +725,8 @@ class AgentLoopWorker:
             non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs_list, dtype=object)
 
         metrics = [input.metrics.model_dump() for input in inputs]
-        return DataProto(batch=batch, non_tensor_batch=non_tensor_batch, meta_info={"metrics": metrics})
+        meta_info = {"metrics": metrics, 'kept_prompt_uids':self.kept_prompt_uids[:self.train_batch_size], 'dropped_prompt_uids':self.dropped_prompt_uids}
+        return DataProto(batch=batch, non_tensor_batch=non_tensor_batch, meta_info=meta_info)
 
 
 async def get_trajectory_info(step, index, validate):
@@ -593,7 +827,7 @@ class AgentLoopManager:
 
     def _init_agent_loop_workers(self):
         self.agent_loop_workers = []
-        num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers
+        num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers if not self.config.actor_rollout_ref.rollout.partial_rollout_pool_size else 1
         num_server_nodes = len(self.server_node_ids)
 
         for i in range(num_workers):

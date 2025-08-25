@@ -15,7 +15,7 @@ import asyncio
 import logging
 import os
 import pickle
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, AsyncIterator, Union
 
 import numpy as np
 import ray
@@ -348,7 +348,8 @@ class AsyncvLLMServer(AsyncServerBase):
         sampling_params: dict[str, Any],
         request_id: str,
         image_data: Optional[list[Any]] = None,
-    ) -> list[int]:
+        stream: bool =False,
+    ) -> Union[list[int], AsyncIterator[list[int]]]:
         max_tokens = self.max_model_len - len(prompt_ids)
         sampling_params = SamplingParams(max_tokens=max_tokens, **sampling_params)
         prompt_ids = _qwen2_5_vl_dedup_image_tokens(prompt_ids, self.processor)
@@ -356,7 +357,17 @@ class AsyncvLLMServer(AsyncServerBase):
             prompt_token_ids=prompt_ids, multi_modal_data={"image": image_data} if image_data else None
         )
         generator = self.engine.generate(prompt=prompt, sampling_params=sampling_params, request_id=request_id)
-
+        async def _stream() -> AsyncIterator[list[int]]:
+            last_len = 0
+            async for output in generator:
+                token_ids = output.outputs[0].token_ids
+                if len(token_ids) > last_len:
+                    new_tokens = token_ids[last_len:]
+                    last_len = len(token_ids)
+                    yield new_tokens
+        if stream:
+            return _stream()
+        
         # Get final response
         final_res: Optional[RequestOutput] = None
         async for output in generator:
