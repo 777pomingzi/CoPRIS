@@ -31,7 +31,7 @@ export BASE_DATA_DIR=/home/test1267/test-6/hbx/datasets/rl_data
 # TODO:
 export EXPERIMENT_NAME=grpo_dapo_distill_r1_1p5_16k-n8-\$(date +%Y-%m-%d_%H-%M-%S)
 SWANLAB_API_KEY=HtpjItuIsLT7SGwM4bQmB
-SWANLAB_LOG_DIR=/home/test1267/test-6/qzk/verl-main-06-24/swanlab/\${EXPERIMENT_NAME}
+SWANLAB_LOG_DIR=/home/test1267/test-6/qzk/verl-main-08-18/swanlab/\${EXPERIMENT_NAME}
 SWANLAB_MODE="cloud"
 
 swanlab login --relogin HtpjItuIsLT7SGwM4bQmB
@@ -49,7 +49,7 @@ export TEST_DATASET="['\$TEST_AIME','\$TEST_MATH']"
 export ACTOR_MODEL_PATH=/home/test1267/test-6/qzk/PLM/DeepSeek-R1-Distill-Qwen-1.5B
 # export ACTOR_MODEL_PATH=/home/test1267/test-6/qzk/PLM/OpenMath-Nemotron-1.5B
 # export ACTOR_MODEL_PATH=/home/test1267/test-6/qzk/PLM/qwen3-1.7b
-export PROJECT_PATH=/home/test1267/test-6/qzk/verl-main-06-24
+export PROJECT_PATH=/home/test1267/test-6/qzk/verl-main-08-18
 export PARALLEL_SIZE=1
 export CKPT_PATH=\${PROJECT_PATH}/checkpoints
 export NCCL_DEBUG=WARN

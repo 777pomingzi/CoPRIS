@@ -55,10 +55,15 @@ def default_compute_score(
 
         # from . import math_verify
         # res = math_verify.compute_score(solution_str, ground_truth)
-    elif data_source == "math_dapo" or data_source.startswith("aime"):
+    elif data_source == "math_dapo" or data_source.startswith("aime") or data_source == "DAPO":
         from . import math_dapo
 
         res = math_dapo.compute_score(solution_str, ground_truth)
+
+    elif data_source.startswith("deepscaler") or data_source in ["test-math-aime24", "test-math-aime25"]:
+        from . import rllm
+        res = rllm.rl_reward.rllm_reward_fn(data_source, solution_str, ground_truth)
+        
     elif data_source in [
         "numina_aops_forum",
         "numina_synthetic_math",

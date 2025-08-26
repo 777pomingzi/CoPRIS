@@ -34,11 +34,10 @@ class SingleTurnAgentLoop(AgentLoopBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
 
-    async def run(self, sampling_params: dict[str, Any], index:int, **kwargs) -> AgentLoopOutput:
+    async def run(self, sampling_params: dict[str, Any], index:int, stream: bool = False, **kwargs) -> AgentLoopOutput:
 
         prompt_ids = kwargs.get("prompt_ids", None)
         response_ids = kwargs.get("response_ids", [])
-        stream = kwargs.get("stream", False)
 
         if prompt_ids is None:
             messages = list(kwargs["raw_prompt"])

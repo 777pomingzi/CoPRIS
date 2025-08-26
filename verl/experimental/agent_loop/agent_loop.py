@@ -161,9 +161,9 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Reward score for the trajectory."""
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
     """Multi-modal inputs for processors (e.g., pixel_values, image_grid_thw)."""
-    uid:int
+    uid:int = None
     """Index of prompt"""
-    gid:int
+    gid:int = None
     """Index of repsonse in group"""
 
 
@@ -351,62 +351,6 @@ class AgentLoopWorker:
             trace_config.get("token2text", False),
         )
 
-    # async def generate_sequences(self, batch: DataProto) -> DataProto:
-    #     """Generate sequences from agent loop.
-
-    #     Args:
-    #         batch (DataProto): Input batch.
-
-    #     Returns:
-    #         DataProto: Output batch.
-    #         - prompts: [bsz, prompt_length], prompt token ids from dataset.
-    #         - responses: [bsz, response_length], output token ids include response tokens
-    #           from LLM generation and observation tokens from tool_calls.
-    #         - response_mask: [bsz, response_length], 1 for LLM generated tokens, 0 for observation/padding tokens.
-    #         - input_ids: [bsz, prompt_length + response_length], whole sequence token ids, including prompt tokens
-    #           and response tokens.
-    #         - attention_mask: [bsz, prompt_length + response_length], 0 for padding tokens, 1 for other tokens.
-    #         - position_ids: [bsz, prompt_length + response_length], incremental position ids.
-
-    #         For multi-turn conversations:
-    #         responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
-    #         response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
-    #     """
-    #     config = self.config.actor_rollout_ref.rollout
-    #     sampling_params = dict(
-    #         temperature=config.temperature,
-    #         top_p=config.top_p,
-    #         repetition_penalty=1.0,
-    #     )
-
-    #     # override sampling params for validation
-    #     if batch.meta_info.get("validate", False):
-    #         sampling_params["top_p"] = config.val_kwargs.top_p
-    #         sampling_params["temperature"] = config.val_kwargs.temperature
-
-    #     # by default, we assume it's a single turn agent
-    #     if "agent_name" not in batch.non_tensor_batch:
-    #         batch.non_tensor_batch["agent_name"] = np.array(["single_turn_agent"] * len(batch), dtype=object)
-
-    #     if "index" in batch.non_tensor_batch:
-    #         index = batch.non_tensor_batch["index"]
-    #     else:
-    #         index = np.arange(len(batch))
-
-
-    #     trajectory_info = await get_trajectory_info(
-    #         batch.meta_info.get("global_steps", -1), index, batch.meta_info.get("validate", False)
-    #     )
-
-    #     tasks = []
-    #     for i in range(len(batch)):
-    #         kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
-    #         tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
-    #     outputs = await asyncio.gather(*tasks)
-
-    #     output = self._postprocess(outputs)
-    #     return output
-
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
 
@@ -453,6 +397,20 @@ class AgentLoopWorker:
         trajectory_info = await get_trajectory_info(
             batch.meta_info.get("global_steps", -1), index, batch.meta_info.get("validate", False)
         )
+        
+        if batch.meta_info.get("validate", False):
+            tasks = []
+            for i in range(len(batch)):
+                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+                tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, stream=False, **kwargs)))
+            outputs = await asyncio.gather(*tasks)
+            prepare_tasks = []
+            for output in outputs:
+                prepare_tasks.append(asyncio.create_task(self.prepare_internal_output(output, stop_event=None)))
+            outputs = await asyncio.gather(*prepare_tasks)
+            output = self._postprocess(outputs)
+            return output
+
         stop_event = asyncio.Event()  
         next_idx = 0
         running  = set()
@@ -466,7 +424,7 @@ class AgentLoopWorker:
 
         for i in range(min(self.partial_rollout_pool_size, len(self.unfinished_kwargs))):
             kwargs = self.unfinished_kwargs[i]
-            running.add(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, **kwargs)))
+            running.add(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, stream=True, **kwargs)))
             next_idx += 1
 
         while True:
@@ -481,19 +439,19 @@ class AgentLoopWorker:
                     index = unfinished_output.index
                     kwargs = self.unfinished_kwargs[index]
                     unfinished_kwargs.append(kwargs)
-                    prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event, finished=False, **kwargs)))
+                    prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
                 break   
 
             for task in done:
                 output = task.result()
                 if next_idx < len(self.unfinished_kwargs) and not stop_event.is_set():
                     kwargs = self.unfinished_kwargs[next_idx]
-                    task = asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[next_idx], next_idx, **kwargs))
+                    task = asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[next_idx], next_idx, stream=True, **kwargs))
                     running.add(task)
                     next_idx += 1
                 index = output.index
                 kwargs = self.unfinished_kwargs[index]
-                prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event, finished=True, **kwargs)))
+                prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event=stop_event, finished=True, **kwargs)))
 
         self.unfinished_kwargs = unfinished_kwargs+self.unfinished_kwargs[next_idx:]
         outputs = await asyncio.gather(*prepare_running)
@@ -505,6 +463,7 @@ class AgentLoopWorker:
         sampling_params: dict[str, Any],
         trajectory: dict[str, Any],
         index: int,
+        stream:bool,
         *,
         agent_name: str,
         **kwargs,
@@ -531,7 +490,7 @@ class AgentLoopWorker:
                     processor=self.processor,
                 )
 
-                task = asyncio.create_task(agent_loop.run(sampling_params, index, **kwargs))
+                task = asyncio.create_task(agent_loop.run(sampling_params, index=index, stream=stream, **kwargs))
                 output = await task
                 return output
 
@@ -643,6 +602,20 @@ class AgentLoopWorker:
         else:
             position_ids = compute_position_id_with_mask(attention_mask)  # (1, seq_len)
 
+        if stop_event is None:
+            return _InternalAgentLoopOutput(
+            prompt_ids=prompt_output["input_ids"],
+            response_ids=response_output["input_ids"],
+            input_ids=input_ids,
+            position_ids=position_ids,
+            response_mask=response_mask,
+            attention_mask=attention_mask,
+            multi_modal_inputs=multi_modal_inputs,
+            multi_modal_data=output.multi_modal_data,
+            reward_score=output.reward_score,
+            num_turns=output.num_turns,
+            metrics=output.metrics,
+        )
 
         uid = kwargs["uid"]
         gid = kwargs["gid"]
@@ -715,8 +688,8 @@ class AgentLoopWorker:
 
         non_tensor_batch = {
             "__num_turns__": np.array([input.num_turns for input in inputs], dtype=np.int32),
-            "uids": uids,
-            "gids":gids
+            "uid": uids,
+            "gid":gids
         }
 
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
@@ -868,7 +841,9 @@ class AgentLoopManager:
         metrics = [output.meta_info["metrics"] for output in outputs]  # List[List[Dict[str, str]]]
         timing = self._performance_metrics(metrics, output)
 
-        output.meta_info = {"timing": timing}
+        meta = output.meta_info if isinstance(output.meta_info, dict) else {}
+        meta["timing"] = timing
+        output.meta_info = meta
         return output
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
