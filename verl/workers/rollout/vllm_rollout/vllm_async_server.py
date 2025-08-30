@@ -223,6 +223,7 @@ class AsyncvLLMServer(AsyncServerBase):
         tensor_parallel_size = config.get("tensor_model_parallel_size", 1)
         max_num_batched_tokens = config.get("max_num_batched_tokens", 8192)
         max_model_len = config.max_model_len if config.max_model_len else config.prompt_length + config.response_length
+        self.response_length = int(config.response_length)
         self.max_model_len = int(max_model_len)
 
         # Override default generation config from hugging face model config,
@@ -350,7 +351,11 @@ class AsyncvLLMServer(AsyncServerBase):
         image_data: Optional[list[Any]] = None,
         stream: bool =False,
     ) -> Union[list[int], AsyncIterator[list[int]]]:
-        max_tokens = self.max_model_len - len(prompt_ids)
+        # Support training and validation at different length
+        if stream:
+            max_tokens = self.response_length - len(prompt_ids)
+        else:
+            max_tokens = self.max_model_len - len(prompt_ids)
         sampling_params = SamplingParams(max_tokens=max_tokens, **sampling_params)
         prompt_ids = _qwen2_5_vl_dedup_image_tokens(prompt_ids, self.processor)
         prompt = TokensPrompt(

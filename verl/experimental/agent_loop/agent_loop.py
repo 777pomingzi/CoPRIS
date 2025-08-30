@@ -161,9 +161,9 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Reward score for the trajectory."""
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
     """Multi-modal inputs for processors (e.g., pixel_values, image_grid_thw)."""
-    uid:int = None
+    uid: Optional[int] = None
     """Index of prompt"""
-    gid:int = None
+    gid: Optional[int] = None
     """Index of repsonse in group"""
 
 
@@ -401,7 +401,7 @@ class AgentLoopWorker:
         if batch.meta_info.get("validate", False):
             tasks = []
             for i in range(len(batch)):
-                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"}
                 tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, stream=False, **kwargs)))
             outputs = await asyncio.gather(*tasks)
             prepare_tasks = []
@@ -420,7 +420,7 @@ class AgentLoopWorker:
         stop_future = asyncio.create_task(stop_event.wait())
         
         for i in range(len(batch)):
-            self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items()})
+            self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"})
 
         for i in range(min(self.partial_rollout_pool_size, len(self.unfinished_kwargs))):
             kwargs = self.unfinished_kwargs[i]
@@ -437,7 +437,11 @@ class AgentLoopWorker:
                 unfinished_outputs = await asyncio.gather(*running, return_exceptions=True) 
                 for unfinished_output in unfinished_outputs:  
                     index = unfinished_output.index
+                    prompt_ids = unfinished_output.prompt_ids
+                    response_ids = unfinished_output.response_ids
                     kwargs = self.unfinished_kwargs[index]
+                    kwargs['prompt_ids'] = prompt_ids
+                    kwargs['response_ids'] = response_ids
                     unfinished_kwargs.append(kwargs)
                     prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
                 break   
@@ -511,7 +515,7 @@ class AgentLoopWorker:
 
                 
 
-    async def prepare_internal_output(self, output: AgentLoopOutput, stop_event: asyncio.Event, finished: bool, **kwargs):
+    async def prepare_internal_output(self, output: AgentLoopOutput, stop_event: asyncio.Event, finished: bool = True, **kwargs):
         # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
         # prompt_ids: left padded with zeros (e.g., [0,0,0,0,1,2,3,4])
         # response_ids: right padded with zeros (e.g., [5,6,7,8,0,0,0,0])
@@ -610,6 +614,7 @@ class AgentLoopWorker:
             position_ids=position_ids,
             response_mask=response_mask,
             attention_mask=attention_mask,
+            index=output.index,
             multi_modal_inputs=multi_modal_inputs,
             multi_modal_data=output.multi_modal_data,
             reward_score=output.reward_score,
@@ -644,6 +649,7 @@ class AgentLoopWorker:
             position_ids=position_ids,
             response_mask=response_mask,
             attention_mask=attention_mask,
+            index=output.index,
             multi_modal_inputs=multi_modal_inputs,
             multi_modal_data=output.multi_modal_data,
             reward_score=output.reward_score,
@@ -746,7 +752,6 @@ class AgentLoopManager:
     def _initialize_llm_servers(self):
         self.rollout_tp_size = self.config.actor_rollout_ref.rollout.tensor_model_parallel_size
         self.rollout_dp_size = self.worker_group.world_size // self.rollout_tp_size
-
         workers_info = ray.get(
             [
                 worker.__ray_call__.remote(lambda self: ray.get_runtime_context().get_node_id())

@@ -1129,18 +1129,21 @@ class RayPPOTrainer:
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
+                        print('start generate sequences!!!')
                         if not self.async_rollout_mode:
                             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
                         else:
                             gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch)
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+                        print('finish generate sequences!!!')
 
                     if "response_mask" not in gen_batch_output.batch.keys():
                         gen_batch_output.batch["response_mask"] = compute_response_mask(gen_batch_output)
 
                     # recompute old_log_probs
                     with marked_timer("old_log_prob", timing_raw, color="blue"):
+                        print('start old logp!!!')
                         gen_batch_output, pad_indices = pad_dataproto_to_divisor_with_indices(gen_batch_output, self.actor_rollout_wg.world_size)
 
                         if self.config.trainer.balance_batch:
@@ -1166,7 +1169,7 @@ class RayPPOTrainer:
                             from verl.utils.debug.metrics import calculate_debug_metrics
 
                             metrics.update(calculate_debug_metrics(batch))
-
+                        print('finish old logp!!!')
                     dropped_uids = gen_batch_output.meta_info['dropped_prompt_uids']
                     for i, (uid, gid, response_mask) in enumerate(
                         zip(gen_batch_output.non_tensor_batch["uid"], gen_batch_output.non_tensor_batch["gid"], gen_batch_output.batch["response_mask"])
@@ -1321,6 +1324,7 @@ class RayPPOTrainer:
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
+                        print('start update actor!!!')
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable

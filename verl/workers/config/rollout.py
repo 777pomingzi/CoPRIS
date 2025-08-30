@@ -103,6 +103,8 @@ class RolloutConfig(BaseConfig):
     free_cache_engine: bool = True
     tensor_model_parallel_size: int = 2
     max_num_batched_tokens: int = 8192
+    filter_groups: bool = False
+    partial_rollout_pool_size: int = 128
 
     # TODO: enable train_kwargs
     # train_sampling_config: SamplingConfig = field(default_factory=SamplingConfig)
