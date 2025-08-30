@@ -4,7 +4,7 @@
 #SBATCH --error=error_%j.log        # 错误日志文件名
 #SBATCH --account=test1267
 #SBATCH --partition=TEST1_XCJ                  # 分区名称      
-#SBATCH --nodelist=g[28]      
+#SBATCH --nodelist=g[90]      
 #SBATCH --gres=gpu:8                      # 每个节点请求 8 块 GPU
 #SBATCH --ntasks=1                        # 总任务数
 #SBATCH --cpus-per-task=64                # 每个任务分配的CPU核心数
