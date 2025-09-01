@@ -1201,7 +1201,7 @@ class RayPPOTrainer:
                             train_batch.append(gid2resp[gid])
                             train_old_logp.append(gid2old_logp[gid].squeeze(0))
                     train_prompt = DataProto.concat(train_prompt)
-                    train_prompt = train_prompt.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    train_prompt = train_prompt.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=False)
                     train_batch = DataProto.concat(train_batch)
                     train_batch = train_batch.union(train_prompt)
 
