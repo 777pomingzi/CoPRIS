@@ -554,6 +554,8 @@ class AgentLoopWorker:
             return_tensors="pt",
             return_attention_mask=True,
         )
+        print('response_output!!!',response_output)
+
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
             response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)

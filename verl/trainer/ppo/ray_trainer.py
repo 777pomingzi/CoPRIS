@@ -1111,10 +1111,10 @@ class RayPPOTrainer:
                 batch.non_tensor_batch["uid"] = np.array(
                     [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                 )
-                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
-                    self.uid2prompt[uid] = batch[i:i+1]
                 
                 gen_batch = self._get_gen_batch(batch)
+                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                    self.uid2prompt[uid] = batch[i:i+1]
 
                 # pass global_steps to trace 
                 gen_batch.meta_info["global_steps"] = self.global_steps
