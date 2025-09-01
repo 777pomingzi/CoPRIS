@@ -157,7 +157,7 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Reward score for the trajectory."""
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
     """Multi-modal inputs for processors (e.g., pixel_values, image_grid_thw)."""
-    uid: Optional[int] = None
+    uid: Optional[str] = None
     """Index of prompt"""
     gid: Optional[int] = None
     """Index of repsonse in group"""
