@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=hbx_block                    # 作业名称
+#SBATCH --job-name=partial-rollout                    # 作业名称
 #SBATCH --output=output_%j.log      # 标准输出和错误日志文件名 (%j 表示作业ID)
 #SBATCH --error=error_%j.log        # 错误日志文件名
 #SBATCH --account=test1267
 #SBATCH --partition=TEST1_XCJ                  # 分区名称      
-#SBATCH --nodelist=g[90]      
+#SBATCH --nodelist=g[28]      
 #SBATCH --gres=gpu:8                      # 每个节点请求 8 块 GPU
 #SBATCH --ntasks=1                        # 总任务数
 #SBATCH --cpus-per-task=64                # 每个任务分配的CPU核心数
@@ -17,6 +17,15 @@ cat <<EOF > run_training.sh
 #!/bin/bash
 set -x
 export VLLM_USE_V1=1
+# export VLLM_WORKER_MULTIPROC_METHOD=spawn
+# export VLLM_LOGGING_LEVEL=DEBUG
+# export NCCL_DEBUG=INFO
+export CPATH="$CONDA_PREFIX/include:$CPATH"
+export C_INCLUDE_PATH="$CONDA_PREFIX/include:$C_INCLUDE_PATH"
+export CPLUS_INCLUDE_PATH="$CONDA_PREFIX/include:$CPLUS_INCLUDE_PATH"
+
+export LIBRARY_PATH="$CONDA_PREFIX/lib:$LIBRARY_PATH"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 # export CUDA_LAUNCH_BLOCKING=1
 # export TORCH_USE_CUDA_DSA=1
 unset ROCR_VISIBLE_DEVICES
@@ -36,14 +45,15 @@ SWANLAB_MODE="cloud"
 
 swanlab login --relogin HtpjItuIsLT7SGwM4bQmB
 # TODO:
-# export TRAIN_DATASET=\$BASE_DATA_DIR/dapo-math-17k.parquet
+# export TRAIN_DATASET=/home/test1267/test-6/qzk/Datasets/DAPO/DAPO.parquet
 export TRAIN_DATASET=/home/test1267/test-6/qzk/Datasets/DAPO/DAPO.parquet
 export TEST_MATH=\$DSR_DATA_DIR/deepscaler_math.parquet
 # export TEST_AIME24=\$OR1_DATA_DIR/aime24.parquet
 # export TEST_AIME25=\$OR1_DATA_DIR/aime25.parquet
 export TEST_AIME=\$DSR_DATA_DIR/deepscaler_aime.parquet
 # export TEST_AIME=\$BASE_DATA_DIR/aime-2024.parquet
-export TEST_DATASET="['\$TEST_AIME','\$TEST_MATH']"
+# export TEST_DATASET="['\$TEST_AIME','\$TEST_MATH']"
+export TEST_DATASET="['\$TEST_AIME']"
 
 # TODO:
 export ACTOR_MODEL_PATH=/home/test1267/test-6/qzk/PLM/DeepSeek-R1-Distill-Qwen-1.5B
@@ -113,7 +123,7 @@ python3 -m verl.trainer.main_ppo \
     data.train_files="\$TRAIN_DATASET" \
     data.val_files="\$TEST_DATASET" \
     data.return_raw_chat=\$return_raw_chat \
-    ++data.gen_batch_size=64 \
+    ++data.gen_batch_size=96 \
     data.train_batch_size=64 \
     data.val_batch_size=4096 \
     data.max_prompt_length=1024 \
@@ -139,23 +149,22 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    ++actor_rollout_ref.actor.fsdp_config.grad_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     ++actor_rollout_ref.rollout.filter_groups=False \
     ++actor_rollout_ref.rollout.partial_rollout_pool_size=512 \
     actor_rollout_ref.rollout.enforce_eager=False \
-    actor_rollout_ref.rollout.free_cache_engine=False \
+    actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.max_num_batched_tokens=32768 \
+    actor_rollout_ref.rollout.max_model_len=32768 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=\$rollout_name \
     actor_rollout_ref.rollout.mode=\$rollout_mode \
     actor_rollout_ref.rollout.multi_turn.format=hermes \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
-    actor_rollout_ref.rollout.val_kwargs.max_new_tokens=31744 \
     actor_rollout_ref.rollout.val_kwargs.n=32 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \

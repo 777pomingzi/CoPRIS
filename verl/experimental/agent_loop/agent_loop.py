@@ -17,7 +17,7 @@ import logging
 import os
 import random
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Union, AsyncIterator, Optional, Any
 from collections import defaultdict
 
 import hydra
@@ -29,6 +29,7 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 from tensordict import TensorDict
 from transformers import AutoProcessor, AutoTokenizer
+
 
 from verl.protocol import DataProto
 from verl.single_controller.ray.base import RayWorkerGroup
@@ -88,26 +89,21 @@ class AsyncLLMServerManager:
         prompt_ids: list[int],
         sampling_params: dict[str, Any],
         image_data: Optional[list[Any]] = None,
-        stream: bool =False,
+        stream: bool = False,
     ) -> list[int]:
-        """Generate tokens from prompt ids.
 
-        Args:
-            request_id (str): request id for sticky session.
-            prompt_ids (List[int]): List of prompt token ids.
-            sampling_params (Dict[str, Any]): Sampling parameters for the chat completion.
-
-        Returns:
-            List[int]: List of generated token ids.
-        """
         server = self._choose_server(request_id)
-        output = await server.generate.remote(
-            request_id=request_id,
-            prompt_ids=prompt_ids,
-            sampling_params=sampling_params,
-            image_data=image_data,
-            stream=stream
-        )
+        try:
+            output = await server.generate.remote(
+                request_id=request_id,
+                prompt_ids=prompt_ids,
+                sampling_params=sampling_params,
+                image_data=image_data,
+                stream=stream,
+            )
+        except asyncio.CancelledError:
+            output = await server.cancel_and_fetch_partial.remote(request_id)
+
         return output
 
 
@@ -161,9 +157,9 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Reward score for the trajectory."""
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
     """Multi-modal inputs for processors (e.g., pixel_values, image_grid_thw)."""
-    uid:int = None
+    uid: Optional[int] = None
     """Index of prompt"""
-    gid:int = None
+    gid: Optional[int] = None
     """Index of repsonse in group"""
 
 
@@ -401,7 +397,7 @@ class AgentLoopWorker:
         if batch.meta_info.get("validate", False):
             tasks = []
             for i in range(len(batch)):
-                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+                kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"}
                 tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, stream=False, **kwargs)))
             outputs = await asyncio.gather(*tasks)
             prepare_tasks = []
@@ -420,7 +416,7 @@ class AgentLoopWorker:
         stop_future = asyncio.create_task(stop_event.wait())
         
         for i in range(len(batch)):
-            self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items()})
+            self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"})
 
         for i in range(min(self.partial_rollout_pool_size, len(self.unfinished_kwargs))):
             kwargs = self.unfinished_kwargs[i]
@@ -432,12 +428,22 @@ class AgentLoopWorker:
             done, running = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
             
             if stop_future in done:
+                for task in [x for x in done if x is not stop_future]:
+                    output = task.result()
+                    index = output.index
+                    kwargs = self.unfinished_kwargs[index]
+                    prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event=stop_event, finished=True, **kwargs)))
+
                 for task in running:
                     task.cancel()      
                 unfinished_outputs = await asyncio.gather(*running, return_exceptions=True) 
                 for unfinished_output in unfinished_outputs:  
                     index = unfinished_output.index
+                    prompt_ids = unfinished_output.prompt_ids
+                    response_ids = unfinished_output.response_ids
                     kwargs = self.unfinished_kwargs[index]
+                    kwargs['prompt_ids'] = prompt_ids
+                    kwargs['response_ids'] = response_ids
                     unfinished_kwargs.append(kwargs)
                     prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
                 break   
@@ -489,7 +495,6 @@ class AgentLoopWorker:
                     tokenizer=self.tokenizer,
                     processor=self.processor,
                 )
-
                 task = asyncio.create_task(agent_loop.run(sampling_params, index=index, stream=stream, **kwargs))
                 output = await task
                 return output
@@ -506,12 +511,13 @@ class AgentLoopWorker:
                         multi_modal_data={},
                         num_turns=0,
                         index=index,
+                        metrics={},
                     )
                 return output
 
                 
 
-    async def prepare_internal_output(self, output: AgentLoopOutput, stop_event: asyncio.Event, finished: bool, **kwargs):
+    async def prepare_internal_output(self, output: AgentLoopOutput, stop_event: asyncio.Event, finished: bool = True, **kwargs):
         # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
         # prompt_ids: left padded with zeros (e.g., [0,0,0,0,1,2,3,4])
         # response_ids: right padded with zeros (e.g., [5,6,7,8,0,0,0,0])
@@ -528,7 +534,6 @@ class AgentLoopWorker:
         #   e.g., [1,1,1,1,1,1,1,(tool start),0,0(tool end),1,1,0,0,0,0]
         # - position_ids: sequential positions for tokens, starting at 0
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
-
         self.tokenizer.padding_side = "left"
         prompt_output = self.tokenizer.pad(
             {"input_ids": output.prompt_ids},
@@ -545,7 +550,7 @@ class AgentLoopWorker:
         response_output = self.tokenizer.pad(
             {"input_ids": output.response_ids},
             padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.response_length,
+            max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
             return_tensors="pt",
             return_attention_mask=True,
         )
@@ -556,7 +561,7 @@ class AgentLoopWorker:
         response_mask_output = self.tokenizer.pad(
             {"input_ids": output.response_mask},
             padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.response_length,
+            max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
             return_tensors="pt",
             return_attention_mask=False,
         )
@@ -610,6 +615,7 @@ class AgentLoopWorker:
             position_ids=position_ids,
             response_mask=response_mask,
             attention_mask=attention_mask,
+            index=output.index,
             multi_modal_inputs=multi_modal_inputs,
             multi_modal_data=output.multi_modal_data,
             reward_score=output.reward_score,
@@ -644,6 +650,7 @@ class AgentLoopWorker:
             position_ids=position_ids,
             response_mask=response_mask,
             attention_mask=attention_mask,
+            index=output.index,
             multi_modal_inputs=multi_modal_inputs,
             multi_modal_data=output.multi_modal_data,
             reward_score=output.reward_score,
@@ -746,7 +753,6 @@ class AgentLoopManager:
     def _initialize_llm_servers(self):
         self.rollout_tp_size = self.config.actor_rollout_ref.rollout.tensor_model_parallel_size
         self.rollout_dp_size = self.worker_group.world_size // self.rollout_tp_size
-
         workers_info = ray.get(
             [
                 worker.__ray_call__.remote(lambda self: ray.get_runtime_context().get_node_id())

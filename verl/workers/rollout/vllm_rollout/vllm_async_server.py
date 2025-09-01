@@ -210,6 +210,8 @@ class AsyncvLLMServer(AsyncServerBase):
         self.vllm_dp_rank = vllm_dp_rank
         self.wg_prefix = wg_prefix
         self.engine: AsyncLLM = None
+        self._latest: dict[str, list[int]] = {}
+        self._stops: dict[str, asyncio.Event] = {}
 
     async def init_engine(self):
         """Init vLLM AsyncLLM engine."""
@@ -223,6 +225,7 @@ class AsyncvLLMServer(AsyncServerBase):
         tensor_parallel_size = config.get("tensor_model_parallel_size", 1)
         max_num_batched_tokens = config.get("max_num_batched_tokens", 8192)
         max_model_len = config.max_model_len if config.max_model_len else config.prompt_length + config.response_length
+        self.response_length = int(config.response_length)
         self.max_model_len = int(max_model_len)
 
         # Override default generation config from hugging face model config,
@@ -349,44 +352,55 @@ class AsyncvLLMServer(AsyncServerBase):
         request_id: str,
         image_data: Optional[list[Any]] = None,
         stream: bool =False,
-    ) -> Union[list[int], AsyncIterator[list[int]]]:
-        max_tokens = self.max_model_len - len(prompt_ids)
+    ) -> list[int]:
+        # Support training and validation at different length
+        if stream:
+            max_tokens = self.response_length - len(prompt_ids)
+        else:
+            max_tokens = self.max_model_len - len(prompt_ids)
         sampling_params = SamplingParams(max_tokens=max_tokens, **sampling_params)
         prompt_ids = _qwen2_5_vl_dedup_image_tokens(prompt_ids, self.processor)
         prompt = TokensPrompt(
             prompt_token_ids=prompt_ids, multi_modal_data={"image": image_data} if image_data else None
         )
         generator = self.engine.generate(prompt=prompt, sampling_params=sampling_params, request_id=request_id)
-        async def _stream() -> AsyncIterator[list[int]]:
-            last_len = 0
-            async for output in generator:
-                token_ids = output.outputs[0].token_ids
-                if len(token_ids) > last_len:
-                    new_tokens = token_ids[last_len:]
-                    last_len = len(token_ids)
-                    yield new_tokens
-        if stream:
-            return _stream()
-        
         # Get final response
-        final_res: Optional[RequestOutput] = None
-        async for output in generator:
-            final_res = output
-        assert final_res is not None
+        if not stream:
+            final_res: Optional[RequestOutput] = None
+            async for output in generator:
+                final_res = output
+            assert final_res is not None
 
-        return final_res.outputs[0].token_ids
+            return final_res.outputs[0].token_ids
+        
+        try:
+            last_tokens: list[int] = []
+            stop = self._stops[request_id] = asyncio.Event()
+            async for output in generator:
+                tokens = output.outputs[0].token_ids
+                last_tokens = tokens
+                self._latest[request_id] = last_tokens
+                if stop.is_set():
+                    await self.engine.abort(request_id)
+                    break
+            if not stop.is_set():
+                self._latest.pop(request_id)
+        finally:
+            self._stops.pop(request_id)
+        
+        return last_tokens 
 
+    async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
+        if ev := self._stops.get(request_id):
+            ev.set()
+        return self._latest.pop(request_id, [])
+    
     async def wake_up(self):
         if self.config.rollout.free_cache_engine:
             await self.engine.wake_up()
 
-    async def abort_all_requests(self) -> None:
-        req_ids = list(self.engine.output_processor.request_states.keys())
-        await asyncio.gather(*(self.engine.abort(rid) for rid in req_ids), return_exceptions=True)
-
     async def sleep(self):
         # TODO: https://github.com/vllm-project/vllm/issues/17103
-        await self.abort_all_requests()
         await self.engine.reset_prefix_cache()
         if self.config.rollout.free_cache_engine:
             await self.engine.sleep(level=VLLM_SLEEP_LEVEL)

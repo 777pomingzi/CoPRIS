@@ -706,8 +706,6 @@ class RayPPOTrainer:
             # unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
 
-            print("validation generation end")
-
             # Store generated outputs
             output_ids = test_output_gen_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
@@ -1166,7 +1164,6 @@ class RayPPOTrainer:
                             from verl.utils.debug.metrics import calculate_debug_metrics
 
                             metrics.update(calculate_debug_metrics(batch))
-
                     dropped_uids = gen_batch_output.meta_info['dropped_prompt_uids']
                     for i, (uid, gid, response_mask) in enumerate(
                         zip(gen_batch_output.non_tensor_batch["uid"], gen_batch_output.non_tensor_batch["gid"], gen_batch_output.batch["response_mask"])

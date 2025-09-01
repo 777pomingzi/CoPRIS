@@ -52,22 +52,16 @@ class SingleTurnAgentLoop(AgentLoopBase):
 
         metrics = {}
         request_id = uuid4().hex
-
         try:
             with simple_timer("generate_sequences", metrics):
-                if not stream:
-                    response_ids = await self.server_manager.generate(
-                        request_id=request_id, prompt_ids=input_ids, sampling_params=sampling_params, stream=stream
-                    )
-                else:
-                    generator = await self.server_manager.generate(
-                        request_id=request_id, prompt_ids=input_ids, sampling_params=sampling_params, stream=stream
-                    )
-                    async for delta in generator:
-                        response_ids += delta
-            
+                task = asyncio.create_task(
+                    self.server_manager.generate(
+                    request_id=request_id, prompt_ids=input_ids, sampling_params=sampling_params, stream=stream
+                ))
+                response_ids = await task
         except asyncio.CancelledError:
-            pass
+            task.cancel()
+            response_ids = await task
 
         finally:     
             response_mask = [1] * len(response_ids)
