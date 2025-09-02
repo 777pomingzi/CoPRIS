@@ -445,7 +445,8 @@ class AgentLoopWorker:
                     kwargs['prompt_ids'] = prompt_ids
                     kwargs['response_ids'] = response_ids
                     unfinished_kwargs.append(kwargs)
-                    prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
+                    if len(unfinished_output.response_ids) != 0:
+                        prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
                 break   
 
             for task in done:
@@ -554,7 +555,6 @@ class AgentLoopWorker:
             return_tensors="pt",
             return_attention_mask=True,
         )
-        print('response_output!!!',response_output)
 
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
