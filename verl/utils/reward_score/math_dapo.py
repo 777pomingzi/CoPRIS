@@ -257,6 +257,10 @@ def compute_score(
         Reward score (1.0 for correct, -1.0 for incorrect)
     """
     # Limit solution length for efficiency
+    print('---------')
+    print('solution_str!!!',solution_str)
+    print('---------')
+    print('ground_truth!!!',ground_truth)
     solution_str = solution_str[-300:]  # The longest answer in MATH-500 has 159 characters
 
     # Verify the solution

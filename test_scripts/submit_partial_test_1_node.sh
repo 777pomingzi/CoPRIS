@@ -4,12 +4,12 @@
 #SBATCH --error=error_%j.log        # 错误日志文件名
 #SBATCH --account=test1267
 #SBATCH --partition=TEST1_XCJ                  # 分区名称      
-#SBATCH --nodelist=g[28]      
+#SBATCH --nodelist=g[28,29]      
 #SBATCH --gres=gpu:8                      # 每个节点请求 8 块 GPU
-#SBATCH --ntasks=1                        # 总任务数
+#SBATCH --ntasks=2                        # 总任务数
 #SBATCH --cpus-per-task=64                # 每个任务分配的CPU核心数
 #SBATCH --mem=1000G                       # 分配的内存大小
-#SBATCH --nodes=1                         # 使用 4 个节点
+#SBATCH --nodes=2                         # 使用 4 个节点
 #SBATCH --ntasks-per-node=1               # 每个节点启动 1 个任务
 
 
@@ -123,7 +123,7 @@ python3 -m verl.trainer.main_ppo \
     data.train_files="\$TRAIN_DATASET" \
     data.val_files="\$TEST_DATASET" \
     data.return_raw_chat=\$return_raw_chat \
-    ++data.gen_batch_size=96 \
+    ++data.gen_batch_size=128 \
     data.train_batch_size=64 \
     data.val_batch_size=4096 \
     data.max_prompt_length=1024 \
@@ -151,7 +151,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     ++actor_rollout_ref.rollout.filter_groups=False \
-    ++actor_rollout_ref.rollout.partial_rollout_pool_size=512 \
+    ++actor_rollout_ref.rollout.partial_rollout_pool_size=1024 \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.max_num_batched_tokens=32768 \

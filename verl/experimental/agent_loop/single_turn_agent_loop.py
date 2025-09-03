@@ -35,24 +35,21 @@ class SingleTurnAgentLoop(AgentLoopBase):
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
 
     async def run(self, sampling_params: dict[str, Any], index:int, stream: bool = False, **kwargs) -> AgentLoopOutput:
-
-        prompt_ids = kwargs.get("prompt_ids", None)
-        response_ids = kwargs.get("response_ids", [])
-
-        if prompt_ids is None:
-            messages = list(kwargs["raw_prompt"])
-            prompt_ids = await self.loop.run_in_executor(
-                None,
-                lambda: self.tokenizer.apply_chat_template(
-                    messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
-                ),
-            )
-        
-        input_ids = prompt_ids + response_ids
-
-        metrics = {}
-        request_id = uuid4().hex
         try:
+            prompt_ids = kwargs.get("prompt_ids", [])
+            response_ids = kwargs.get("response_ids", [])
+
+            if len(prompt_ids) == 0:
+                messages = list(kwargs["raw_prompt"])
+                prompt_ids = await self.loop.run_in_executor(
+                    None,
+                    lambda: self.tokenizer.apply_chat_template(
+                        messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                    ),
+                )
+            input_ids = prompt_ids + response_ids
+            metrics = {}
+            request_id = uuid4().hex
             with simple_timer("generate_sequences", metrics):
                 task = asyncio.create_task(
                     self.server_manager.generate(
@@ -60,8 +57,14 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 ))
                 response_ids = await task
         except asyncio.CancelledError:
-            task.cancel()
-            response_ids = await task
+            try: task
+            except NameError:
+                prompt_ids = kwargs.get("prompt_ids", [])
+                response_ids = kwargs.get("response_ids", [])
+                metrics = {}
+            else:
+                task.cancel()
+                response_ids = await task
 
         finally:     
             response_mask = [1] * len(response_ids)

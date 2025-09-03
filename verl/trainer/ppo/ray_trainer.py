@@ -629,7 +629,7 @@ class RayPPOTrainer:
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
-        reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
+        reward_model_keys = set({"data_source", "reward_model", "extra_info"}) & batch.non_tensor_batch.keys()
 
         # pop those keys for generation
         batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
@@ -1113,7 +1113,7 @@ class RayPPOTrainer:
                 )
                 
                 gen_batch = self._get_gen_batch(batch)
-                for i, uid in enumerate(batch.non_tensor_batch["uid"]):
+                for i, uid in enumerate(gen_batch.non_tensor_batch["uid"]):
                     self.uid2prompt[uid] = batch[i:i+1]
 
                 # pass global_steps to trace 
@@ -1201,7 +1201,7 @@ class RayPPOTrainer:
                             train_batch.append(gid2resp[gid])
                             train_old_logp.append(gid2old_logp[gid].squeeze(0))
                     train_prompt = DataProto.concat(train_prompt)
-                    train_prompt = train_prompt.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=False)
+                    train_prompt = train_prompt.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     train_batch = DataProto.concat(train_batch)
                     train_batch = train_batch.union(train_prompt)
 
@@ -1258,7 +1258,8 @@ class RayPPOTrainer:
                                 future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
                             else:
                                 reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-
+                        else:
+                            reward_tensor = batch.batch["rm_scores"]
                     if self.use_reference_policy:
                         # compute reference log_prob
                         with marked_timer("ref", timing_raw, color="olive"):
@@ -1276,7 +1277,7 @@ class RayPPOTrainer:
 
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
-                        reward_extra_infos_dict: dict[str, list]
+                        reward_extra_infos_dict: dict[str, list] = None
                         if self.config.reward_model.launch_reward_fn_async:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
                         batch.batch["token_level_scores"] = reward_tensor

@@ -211,6 +211,7 @@ def union_numpy_dict(tensor_dict1: dict[str, np.ndarray], tensor_dict2: dict[str
         if key in tensor_dict1:
             assert isinstance(tensor_dict2[key], np.ndarray)
             assert isinstance(tensor_dict1[key], np.ndarray)
+            print(tensor_dict2[key],tensor_dict1[key])
             # to properly deal with nan and object type
             assert _deep_equal(tensor_dict1[key], tensor_dict2[key], visited=set()), (
                 f"`{key}` in tensor_dict1 and tensor_dict2 are not the same object."

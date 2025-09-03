@@ -91,9 +91,8 @@ class AsyncLLMServerManager:
         image_data: Optional[list[Any]] = None,
         stream: bool = False,
     ) -> list[int]:
-
-        server = self._choose_server(request_id)
         try:
+            server = self._choose_server(request_id)
             output = await server.generate.remote(
                 request_id=request_id,
                 prompt_ids=prompt_ids,
@@ -326,8 +325,10 @@ class AgentLoopWorker:
         self.train_batch_size = config.data.train_batch_size
         self.uid2reward = defaultdict(list)
         self.unfinished_kwargs = []
+        self.unfinished_trajectory_info = []
         self.kept_prompt_uids = []
         self.dropped_prompt_uids = []
+        self.pad_lock = asyncio.Lock()
 
         agent_loop_config_path = config.actor_rollout_ref.rollout.agent.agent_loop_config_path
         if agent_loop_config_path:
@@ -412,15 +413,17 @@ class AgentLoopWorker:
         running  = set()
         prepare_running = set()
         unfinished_kwargs = []
+        unfinished_trajectory_info = []
         
         stop_future = asyncio.create_task(stop_event.wait())
         
         for i in range(len(batch)):
             self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"})
+            self.unfinished_trajectory_info.append(trajectory_info[i])
 
         for i in range(min(self.partial_rollout_pool_size, len(self.unfinished_kwargs))):
             kwargs = self.unfinished_kwargs[i]
-            running.add(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, stream=True, **kwargs)))
+            running.add(asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[i], i, stream=True, **kwargs)))
             next_idx += 1
 
         while True:
@@ -445,6 +448,7 @@ class AgentLoopWorker:
                     kwargs['prompt_ids'] = prompt_ids
                     kwargs['response_ids'] = response_ids
                     unfinished_kwargs.append(kwargs)
+                    unfinished_trajectory_info.append(self.unfinished_trajectory_info[index])
                     if len(unfinished_output.response_ids) != 0:
                         prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
                 break   
@@ -453,7 +457,7 @@ class AgentLoopWorker:
                 output = task.result()
                 if next_idx < len(self.unfinished_kwargs) and not stop_event.is_set():
                     kwargs = self.unfinished_kwargs[next_idx]
-                    task = asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[next_idx], next_idx, stream=True, **kwargs))
+                    task = asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[next_idx], next_idx, stream=True, **kwargs))
                     running.add(task)
                     next_idx += 1
                 index = output.index
@@ -461,6 +465,7 @@ class AgentLoopWorker:
                 prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event=stop_event, finished=True, **kwargs)))
 
         self.unfinished_kwargs = unfinished_kwargs+self.unfinished_kwargs[next_idx:]
+        self.unfinished_trajectory_info = unfinished_trajectory_info+self.unfinished_trajectory_info[next_idx:]
         outputs = await asyncio.gather(*prepare_running)
         output = self._postprocess(outputs)
         return output
@@ -482,7 +487,6 @@ class AgentLoopWorker:
             validate=trajectory["validate"],
             name="agent_loop",
         ):
-            task = None
             try:
                 assert agent_name in _agent_loop_registry, (
                     f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
@@ -501,10 +505,8 @@ class AgentLoopWorker:
                 return output
 
             except asyncio.CancelledError:
-                if task is not None:
-                    task.cancel()
-                    output = await task
-                else:
+                try: task
+                except NameError:
                     output = AgentLoopOutput(
                         prompt_ids=[],
                         response_ids=[],
@@ -514,6 +516,9 @@ class AgentLoopWorker:
                         index=index,
                         metrics={},
                     )
+                else:
+                    task.cancel()
+                    output = await task
                 return output
 
                 
@@ -535,26 +540,28 @@ class AgentLoopWorker:
         #   e.g., [1,1,1,1,1,1,1,(tool start),0,0(tool end),1,1,0,0,0,0]
         # - position_ids: sequential positions for tokens, starting at 0
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
-        self.tokenizer.padding_side = "left"
-        prompt_output = self.tokenizer.pad(
-            {"input_ids": output.prompt_ids},
-            padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.prompt_length,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
+        async with self.pad_lock:
+            self.tokenizer.padding_side = "left"
+            prompt_output = self.tokenizer.pad(
+                {"input_ids": output.prompt_ids},
+                padding="max_length",
+                max_length=self.config.actor_rollout_ref.rollout.prompt_length,
+                return_tensors="pt",
+                return_attention_mask=True,
+            )
         if prompt_output["input_ids"].dim() == 1:
             prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
             prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
 
-        self.tokenizer.padding_side = "right"
-        response_output = self.tokenizer.pad(
-            {"input_ids": output.response_ids},
-            padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
+        async with self.pad_lock:
+            self.tokenizer.padding_side = "right"
+            response_output = self.tokenizer.pad(
+                {"input_ids": output.response_ids},
+                padding="max_length",
+                max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
+                return_tensors="pt",
+                return_attention_mask=True,
+            )
 
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
@@ -708,6 +715,8 @@ class AgentLoopWorker:
 
         metrics = [input.metrics.model_dump() for input in inputs]
         meta_info = {"metrics": metrics, 'kept_prompt_uids':self.kept_prompt_uids[:self.train_batch_size], 'dropped_prompt_uids':self.dropped_prompt_uids}
+        self.kept_prompt_uids = self.kept_prompt_uids[self.train_batch_size:]
+        self.dropped_prompt_uids = []
         return DataProto(batch=batch, non_tensor_batch=non_tensor_batch, meta_info=meta_info)
 
 
