@@ -55,7 +55,8 @@ class SingleTurnAgentLoop(AgentLoopBase):
                     self.server_manager.generate(
                     request_id=request_id, prompt_ids=input_ids, sampling_params=sampling_params, stream=stream
                 ))
-                response_ids = await task
+                delta_ids = await task
+                response_ids = response_ids + delta_ids
         except asyncio.CancelledError:
             try: task
             except NameError:
@@ -64,7 +65,8 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 metrics = {}
             else:
                 task.cancel()
-                response_ids = await task
+                delta_ids = await task
+                response_ids = response_ids + delta_ids
 
         finally:     
             response_mask = [1] * len(response_ids)
