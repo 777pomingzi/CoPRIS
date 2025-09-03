@@ -567,13 +567,15 @@ class AgentLoopWorker:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
             response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
 
-        response_mask_output = self.tokenizer.pad(
-            {"input_ids": output.response_mask},
-            padding="max_length",
-            max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
-            return_tensors="pt",
-            return_attention_mask=False,
-        )
+        async with self.pad_lock:
+            self.tokenizer.padding_side = "right"
+            response_mask_output = self.tokenizer.pad(
+                {"input_ids": output.response_mask},
+                padding="max_length",
+                max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
+                return_tensors="pt",
+                return_attention_mask=False,
+            )
         if response_mask_output["input_ids"].dim() == 1:
             response_mask_output["input_ids"] = response_mask_output["input_ids"].unsqueeze(0)
 
