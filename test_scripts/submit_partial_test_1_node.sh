@@ -17,9 +17,7 @@ cat <<EOF > run_training.sh
 #!/bin/bash
 set -x
 export VLLM_USE_V1=1
-# export VLLM_WORKER_MULTIPROC_METHOD=spawn
-# export VLLM_LOGGING_LEVEL=DEBUG
-# export NCCL_DEBUG=INFO
+
 export CPATH="$CONDA_PREFIX/include:$CPATH"
 export C_INCLUDE_PATH="$CONDA_PREFIX/include:$C_INCLUDE_PATH"
 export CPLUS_INCLUDE_PATH="$CONDA_PREFIX/include:$CPLUS_INCLUDE_PATH"
@@ -46,14 +44,15 @@ SWANLAB_MODE="cloud"
 swanlab login --relogin HtpjItuIsLT7SGwM4bQmB
 # TODO:
 # export TRAIN_DATASET=/home/test1267/test-6/qzk/Datasets/DAPO/DAPO.parquet
-export TRAIN_DATASET=/home/test1267/test-6/qzk/Datasets/DAPO/DAPO.parquet
+export TRAIN_DATASET=/home/test1267/test-6/qzk/Datasets/deepscaler/deepscaler.parquet
 export TEST_MATH=\$DSR_DATA_DIR/deepscaler_math.parquet
 # export TEST_AIME24=\$OR1_DATA_DIR/aime24.parquet
 # export TEST_AIME25=\$OR1_DATA_DIR/aime25.parquet
 export TEST_AIME=\$DSR_DATA_DIR/deepscaler_aime.parquet
 # export TEST_AIME=\$BASE_DATA_DIR/aime-2024.parquet
 # export TEST_DATASET="['\$TEST_AIME','\$TEST_MATH']"
-export TEST_DATASET="['\$TEST_AIME']"
+export DATA_DIR=/home/test1267/test-6/qzk/Datasets
+export TEST_DATASET="['\$DATA_DIR/AIME24/test.parquet','\$DATA_DIR/AIME25/test.parquet']"
 
 # TODO:
 export ACTOR_MODEL_PATH=/home/test1267/test-6/qzk/PLM/DeepSeek-R1-Distill-Qwen-1.5B
@@ -133,7 +132,6 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.path=\$ACTOR_MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
-    actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
@@ -145,6 +143,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.000 \
     actor_rollout_ref.actor.entropy_coeff=0.000 \
+    actor_rollout_ref.actor.grad_clip=1.0 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \

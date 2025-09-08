@@ -64,20 +64,32 @@ class AsyncLLMServerManager:
         random.shuffle(self.server_handles)
 
         # Least requests load balancing
-        self.weighted_serveres = [[0, (hash(server), server)] for server in server_handles]
-        heapq.heapify(self.weighted_serveres)
+        self.weighted_servers = [[0, (hash(server), server)] for server in server_handles]
+        heapq.heapify(self.weighted_servers)
+        self.inflight = defaultdict(int)
+        self._lock = asyncio.Lock()
 
         # LRU cache to map request_id to server
         self.request_id_to_server = LRUCache(maxsize=max_cache_size)
 
+    # def _choose_server(self, request_id: str) -> ray.actor.ActorHandle:
+    #     # TODO: implement server pressure awareness load balancing
+    #     if request_id in self.request_id_to_server:
+    #         return self.request_id_to_server[request_id]
+
+    #     server = self.weighted_serveres[0][1][1]
+    #     self.weighted_serveres[0][0] += 1
+    #     heapq.heapreplace(self.weighted_serveres, self.weighted_serveres[0])
+    #     self.request_id_to_server[request_id] = server
+    #     return server
+
     def _choose_server(self, request_id: str) -> ray.actor.ActorHandle:
-        # TODO: implement server pressure awareness load balancing
         if request_id in self.request_id_to_server:
             return self.request_id_to_server[request_id]
-
-        server = self.weighted_serveres[0][1][1]
-        self.weighted_serveres[0][0] += 1
-        heapq.heapreplace(self.weighted_serveres, self.weighted_serveres[0])
+        server = self.weighted_servers[0][1][1]
+        self.weighted_servers[0][0] += 1
+        self.inflight[server] += 1
+        heapq.heapreplace(self.weighted_servers, self.weighted_servers[0])
         self.request_id_to_server[request_id] = server
         return server
 
@@ -102,7 +114,14 @@ class AsyncLLMServerManager:
             )
         except asyncio.CancelledError:
             output = await server.cancel_and_fetch_partial.remote(request_id)
-
+        finally:
+            async with self._lock:
+                for i, (w, (_, s)) in enumerate(self.weighted_servers):
+                    if s == server:
+                        self.weighted_servers[i][0] = max(0, w - 1)
+                        heapq.heapify(self.weighted_servers)
+                        break
+                self.inflight[server] = max(0, self.inflight[server]-1)
         return output
 
 
@@ -333,7 +352,6 @@ class AgentLoopWorker:
         self.unfinished_trajectory_info = []
         self.kept_prompt_uids = []
         self.dropped_prompt_uids = []
-        self.pad_lock = asyncio.Lock()
 
         agent_loop_config_path = config.actor_rollout_ref.rollout.agent.agent_loop_config_path
         if agent_loop_config_path:
@@ -430,7 +448,8 @@ class AgentLoopWorker:
             kwargs = self.unfinished_kwargs[i]
             running.add(asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[i], i, stream=True, **kwargs)))
             next_idx += 1
-
+        
+        unfinished_output_response_length_count = defaultdict(int)
         while True:
             wait_set = running | {stop_future}
             done, running = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
@@ -454,10 +473,11 @@ class AgentLoopWorker:
                     kwargs['response_ids'] = response_ids
                     unfinished_kwargs.append(kwargs)
                     unfinished_trajectory_info.append(self.unfinished_trajectory_info[index])
+                    unfinished_output_response_length_count[len(unfinished_output.response_ids)]+=1
                     if len(unfinished_output.response_ids) != 0:
                         prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
                 break   
-
+                    
             for task in done:
                 output = task.result()
                 if next_idx < len(self.unfinished_kwargs) and not stop_event.is_set():
