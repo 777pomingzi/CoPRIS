@@ -60,7 +60,7 @@ def default_compute_score(
 
         res = math_dapo.compute_score(solution_str, ground_truth)
 
-    elif  data_source in ["test-math-aime24", "test-math-aime25","AIME24", "AIME25"]:
+    elif data_source in ["test-math-aime24", "test-math-aime25","AIME24", "AIME25"]:
         from . import rllm
         res = rllm.rl_reward.rllm_reward_fn(data_source, solution_str, ground_truth)
         

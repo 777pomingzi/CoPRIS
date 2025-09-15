@@ -6,10 +6,10 @@
 #SBATCH --partition=TEST1_XCJ                  # 分区名称      
 #SBATCH --nodelist=g[28,29]      
 #SBATCH --gres=gpu:8                      # 每个节点请求 8 块 GPU
-#SBATCH --ntasks=2                        # 总任务数
+#SBATCH --ntasks=1                        # 总任务数
 #SBATCH --cpus-per-task=64                # 每个任务分配的CPU核心数
 #SBATCH --mem=1000G                       # 分配的内存大小
-#SBATCH --nodes=2                         # 使用 4 个节点
+#SBATCH --nodes=1                         # 使用 4 个节点
 #SBATCH --ntasks-per-node=1               # 每个节点启动 1 个任务
 
 
