@@ -288,6 +288,8 @@ class SGLangRollout(BaseRollout):
         """
         super().__init__()
         self.config = config
+        self._latest: dict[str, list[int]] = {}
+        self._stops: dict[str, asyncio.Event] = {}
         self._device_mesh_cpu = device_mesh
         os.environ.setdefault("SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK", "true")
 
@@ -1025,21 +1027,48 @@ class SGLangRollout(BaseRollout):
         return await self._handle_engine_generate(generation_prompt_ids, sampling_params, image_data)
 
     async def _handle_engine_generate(
-        self, generation_prompt_ids: list[int], sampling_params: dict, image_data: Optional[list[Any]] = None
+        self, generation_prompt_ids: list[int], sampling_params: dict, request_id: str, image_data: Optional[list[Any]] = None, stream: bool =False,
     ) -> dict:
-        max_new_tokens = min(self.config.response_length, self.config.max_model_len - len(generation_prompt_ids) - 1)
+        if stream:
+            max_new_tokens = self.config.response_length - len(generation_prompt_ids)
+        else:
+            max_new_tokens = self.max_model_len - len(generation_prompt_ids)
 
         kwargs = sampling_params.copy()
         kwargs["max_new_tokens"] = max_new_tokens
         kwargs["n"] = 1  # group size is supported in preprocess
 
-        output = await self._engine.async_generate(
+        generator = await self._engine.async_generate(
             input_ids=generation_prompt_ids,
             sampling_params=kwargs,
             return_logprob=False,
             image_data=image_data,
+            stream=stream
         )
-        return output
+
+        if not stream:
+            return generator
+        
+        try:
+            last_tokens: list[int] = []
+            stop = self._stops[request_id] = asyncio.Event()
+            async for output in generator:
+                tokens = output.outputs[0].token_ids
+                last_tokens = tokens
+                self._latest[request_id] = last_tokens
+                if stop.is_set():
+                    await self.engine.abort(request_id)
+                    break
+            if not stop.is_set():
+                self._latest.pop(request_id)
+        finally:
+            self._stops.pop(request_id)
+
+        return last_tokens
+    async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
+        if ev := self._stops.get(request_id):
+            ev.set()
+        return self._latest.pop(request_id, [])
 
     async def _handle_pending_state(self, _req: AsyncRolloutRequest) -> AsyncRolloutRequest:
         if _req.tool_schemas is not None:
@@ -1568,12 +1597,16 @@ class SGLangRollout(BaseRollout):
         sampling_params: dict[str, Any],
         request_id: str,
         image_data: Optional[list[Any]] = None,
+        stream: bool =False,
     ) -> torch.Tensor:
         """Generate sequence with token-in-token-out."""
         request_sampling_params = self.sampling_params.copy()
         request_sampling_params.update(sampling_params)
-        output = await self._handle_engine_generate(prompt_ids, request_sampling_params, image_data=image_data)
-        return output["output_ids"]
+        output = await self._handle_engine_generate(prompt_ids, request_sampling_params, request_id=request_id, image_data=image_data, stream=stream)
+        if not stream:
+            return output["output_ids"]
+        else:
+            return output
 
     async def wake_up(self):
         """Load model weights and build kv cache."""

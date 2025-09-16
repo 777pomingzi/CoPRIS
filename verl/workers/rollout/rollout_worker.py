@@ -161,10 +161,15 @@ class RolloutWorker(Worker):
         sampling_params: dict[str, Any],
         request_id: str,
         image_data: Optional[list[Any]] = None,
+        stream: bool =False,
     ) -> list[int]:
-        ret = await self.rollout.generate(prompt_ids, sampling_params, request_id, image_data=image_data)
+        ret = await self.rollout.generate(prompt_ids, sampling_params, request_id, image_data=image_data, stream=stream)
         return ret
 
+    @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD, blocking=False)
+    async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
+        return await self.rollout.cancel_and_fetch_partial(request_id)
+    
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
     async def wake_up(self):
         if self.config.free_cache_engine:
