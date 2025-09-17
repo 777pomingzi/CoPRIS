@@ -4,7 +4,7 @@
 #SBATCH --error=error_%j.log
 #SBATCH --account=test
 #SBATCH --partition=TEST1
-#SBATCH --nodelist=g[82,84]
+#SBATCH --nodelist=g[81,82]
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
@@ -42,6 +42,8 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
     -e CONT_CODE="$CONT_CODE" \
     -e CONT_DATA="$CONT_DATA" \
     -e CONT_MODEL="$CONT_MODEL" \
+    -e SLURM_NNODES \
+    -e HEAD_IP \
     -v "$HOST_CODE":"$CONT_CODE" \
     -v "$HOST_DATA":"$CONT_DATA" \
     -v "$HOST_MODEL":"$CONT_MODEL" \
@@ -51,9 +53,9 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
       GPUS_PER_NODE=$(nvidia-smi --list-gpus 2>/dev/null | wc -l || echo 8)
       ray stop || true
       sleep 2
-      ray start --head --port=6379 --include-dashboard=false --num-gpus=$GPUS_PER_NODE
+      ray start --head --port=6379 --dashboard-host=0.0.0.0
       sleep 5
-      ray status || true
+      ray status
 
       export GPUS_PER_NODE=$GPUS_PER_NODE
       export WORLD_SIZE=${SLURM_NNODES:-1}
@@ -157,13 +159,15 @@ else
     -v "$HOST_CODE":"$CONT_CODE" \
     -v "$HOST_DATA":"$CONT_DATA" \
     -v "$HOST_MODEL":"$CONT_MODEL" \
+    -e SLURM_NNODES \
+    -e HEAD_IP \
     "$IMAGE" \
     bash -lc '
       set -euxo pipefail
       GPUS_PER_NODE=$(nvidia-smi --list-gpus 2>/dev/null | wc -l || echo 8)
       ray stop || true
       sleep 2
-      ray start --address="'"$HEAD_IP"'":6379 --num-gpus=$GPUS_PER_NODE
+      ray start --address="'"$HEAD_IP"'":6379
 
       while ray status --address="'"$HEAD_IP"'":6379 >/dev/null 2>&1; do
         sleep 30
