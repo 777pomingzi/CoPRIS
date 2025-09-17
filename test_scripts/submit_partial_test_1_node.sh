@@ -4,7 +4,7 @@
 #SBATCH --error=error_%j.log        # 错误日志文件名
 #SBATCH --account=test
 #SBATCH --partition=TEST1_SCY                  # 分区名称      
-#SBATCH --nodelist=g[86]      
+#SBATCH --nodelist=g[48,49]      
 #SBATCH --gres=gpu:8                      # 每个节点请求 8 块 GPU
 #SBATCH --ntasks=1                        # 总任务数
 #SBATCH --cpus-per-task=64                # 每个任务分配的CPU核心数
@@ -112,7 +112,7 @@ ray status
 WORLD_SIZE=\${SLURM_NTASKS}
 
 rollout_mode="async"
-rollout_name="vllm" # sglang or vllm
+rollout_name="sglang" # sglang or vllm
 return_raw_chat="True"
 
 if [ \$RANK -eq 0 ]; then
