@@ -2,21 +2,22 @@
 #SBATCH --job-name=partial-rollout
 #SBATCH --output=output_%j.log
 #SBATCH --error=error_%j.log
-#SBATCH --account=test
-#SBATCH --partition=TEST1
-#SBATCH --nodelist=g[81,82]
+#SBATCH --account=test1267
+#SBATCH --partition=TEST1_XCJ
+#SBATCH --nodelist=g[28,29]
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=1000G
 
+
 set -euo pipefail
 
 IMAGE="verlai/verl:latest"
 SHM_SIZE="700g"
 
-HOST_CODE="/home/test/test06/qzk/verl-partial-agent-loop"
+HOST_CODE="/home/test1267/test-6/qzk/verl-main-08-18"
 HOST_DATA="/home/test1267/test-6/qzk/Datasets"
 HOST_MODEL="/home/test1267/test-6/qzk/PLM/DeepSeek-R1-Distill-Qwen-1.5B"
 
@@ -37,7 +38,7 @@ set -euxo pipefail
 
 if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
   echo "[INFO] On HEAD node: $SLURMD_NODENAME"
-
+  docker stop $(docker ps -q) || true
   docker run --rm -i --gpus all --network host --shm-size "$SHM_SIZE" \
     -e CONT_CODE="$CONT_CODE" \
     -e CONT_DATA="$CONT_DATA" \
@@ -141,7 +142,7 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
         trainer.balance_batch=True \
         trainer.project_name="${PROJECT_NAME}" \
         trainer.experiment_name="${EXPERIMENT_NAME}" \
-        trainer.val_before_train=False \
+        trainer.val_before_train=True \
         trainer.n_gpus_per_node=${GPUS_PER_NODE} \
         trainer.nnodes=${WORLD_SIZE} \
         trainer.save_freq=20 \
@@ -154,7 +155,7 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
     '
 else
   echo "[INFO] On WORKER node: $SLURMD_NODENAME"
-
+  # docker stop $(docker ps -q) || true
   docker run --rm -i --gpus all --network host --shm-size "$SHM_SIZE" \
     -v "$HOST_CODE":"$CONT_CODE" \
     -v "$HOST_DATA":"$CONT_DATA" \

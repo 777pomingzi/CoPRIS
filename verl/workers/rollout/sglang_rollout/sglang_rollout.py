@@ -1028,11 +1028,11 @@ class SGLangRollout(BaseRollout):
 
     async def _handle_engine_generate(
         self, generation_prompt_ids: list[int], sampling_params: dict, request_id: str, image_data: Optional[list[Any]] = None, stream: bool =False,
-    ) -> dict:
+    ) -> list[int]:
         if stream:
             max_new_tokens = self.config.response_length - len(generation_prompt_ids)
         else:
-            max_new_tokens = self.max_model_len - len(generation_prompt_ids)
+            max_new_tokens = self.config.max_model_len - len(generation_prompt_ids)
 
         kwargs = sampling_params.copy()
         kwargs["max_new_tokens"] = max_new_tokens
@@ -1047,7 +1047,7 @@ class SGLangRollout(BaseRollout):
         )
 
         if not stream:
-            return generator
+            return generator["output_ids"]
         
         try:
             last_tokens: list[int] = []
@@ -1057,13 +1057,14 @@ class SGLangRollout(BaseRollout):
                 last_tokens = tokens
                 self._latest[request_id] = last_tokens
                 if stop.is_set():
-                    await self.engine.abort(request_id)
+                    await self._engine.abort_request(request_id)
                     break
             if not stop.is_set():
                 self._latest.pop(request_id)
         finally:
             self._stops.pop(request_id)
 
+        # print(last_tokens)
         return last_tokens
     async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
         if ev := self._stops.get(request_id):
@@ -1598,15 +1599,12 @@ class SGLangRollout(BaseRollout):
         request_id: str,
         image_data: Optional[list[Any]] = None,
         stream: bool =False,
-    ) -> torch.Tensor:
+    ) -> list[int]:
         """Generate sequence with token-in-token-out."""
         request_sampling_params = self.sampling_params.copy()
         request_sampling_params.update(sampling_params)
         output = await self._handle_engine_generate(prompt_ids, request_sampling_params, request_id=request_id, image_data=image_data, stream=stream)
-        if not stream:
-            return output["output_ids"]
-        else:
-            return output
+        return output
 
     async def wake_up(self):
         """Load model weights and build kv cache."""

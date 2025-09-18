@@ -1,9 +1,9 @@
 import json
 from typing import List, Union
 
-from rllm.rewards.code_reward import rllm_reward_fn_code
-from rllm.rewards.math_reward import RewardMathFn, rllm_reward_fn_math
-from rllm.rewards.reward_types import (RewardConfig, RewardFn, RewardInput,
+from .code_reward import rllm_reward_fn_code
+from .math_reward import RewardMathFn, rllm_reward_fn_math
+from .reward_types import (RewardConfig, RewardFn, RewardInput,
                                        RewardOutput, RewardType)
 
 

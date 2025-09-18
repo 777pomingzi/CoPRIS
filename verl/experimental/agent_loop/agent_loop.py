@@ -122,6 +122,7 @@ class AsyncLLMServerManager:
                         heapq.heapify(self.weighted_servers)
                         break
                 self.inflight[server] = max(0, self.inflight[server]-1)
+            print('output!!!',output)
         return output
 
 
@@ -387,6 +388,7 @@ class AgentLoopWorker:
             responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
+        print('start agentloop generation!!!!')
         config = self.config.actor_rollout_ref.rollout
         sampling_params = dict(
             temperature=config.temperature,
@@ -582,7 +584,6 @@ class AgentLoopWorker:
             return_attention_mask=True,
             padding_side="right"
         )
-
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
             response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
