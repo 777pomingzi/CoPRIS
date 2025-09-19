@@ -2,9 +2,9 @@
 #SBATCH --job-name=partial-rollout
 #SBATCH --output=output_%j.log
 #SBATCH --error=error_%j.log
-#SBATCH --account=test1267
-#SBATCH --partition=TEST1_XCJ
-#SBATCH --nodelist=g[28,29]
+#SBATCH --account=test
+#SBATCH --partition=TEST1_SCY
+#SBATCH --nodelist=g[48,49]
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
@@ -17,7 +17,7 @@ set -euo pipefail
 IMAGE="verlai/verl:latest"
 SHM_SIZE="700g"
 
-HOST_CODE="/home/test1267/test-6/qzk/verl-main-08-18"
+HOST_CODE="/home/test/test06/qzk/verl-partial-agent-loop"
 HOST_DATA="/home/test1267/test-6/qzk/Datasets"
 HOST_MODEL="/home/test1267/test-6/qzk/PLM/DeepSeek-R1-Distill-Qwen-1.5B"
 
@@ -171,7 +171,7 @@ else
       ray start --address="'"$HEAD_IP"'":6379
 
       while ray status --address="'"$HEAD_IP"'":6379 >/dev/null 2>&1; do
-        sleep 30
+        sleep 300
       done
 
       ray stop || true

@@ -13,14 +13,14 @@ import random
 import ast 
 
 #from rllm.rewards.code_utils.code_contests import run_test as code_contests_run_test
-from rllm.rewards.code_utils.livecodebench import run_test as lcb_run_test
-from rllm.rewards.code_utils.codeforces import run_test as codeforces_run_test
+from .code_utils.livecodebench import run_test as lcb_run_test
+from .code_utils.codeforces import run_test as codeforces_run_test
 #from rllm.rewards.code_utils.swebench import swebench_check_correctness
-from rllm.rewards.code_utils.humanevalplus import run_test as humanevalplus_run_test, get_num_test_cases
-from rllm.rewards.code_utils.taco import run_test as taco_run_test
-from rllm.rewards.code_utils.firejail_exec import code_exec_firejail as lc_code_exec
-from rllm.rewards.code_utils.kodcode import code_exec as kod_code_exec
-from rllm.rewards.reward_types import RewardConfig, RewardFn, RewardInput, RewardOutput, RewardType
+from .code_utils.humanevalplus import run_test as humanevalplus_run_test, get_num_test_cases
+from .code_utils.taco import run_test as taco_run_test
+from .code_utils.firejail_exec import code_exec_firejail as lc_code_exec
+from .code_utils.kodcode import code_exec as kod_code_exec
+from .reward_types import RewardConfig, RewardFn, RewardInput, RewardOutput, RewardType
 
 
 def extract_code_from_model(model_response: str):

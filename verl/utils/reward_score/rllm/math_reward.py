@@ -5,12 +5,12 @@ validate answers when necessary.
 """
 from typing import List, Union
 
-from rllm.globals import THOUGHT_DELIMITER_START, THOUGHT_DELIMITER_END, OAI_RM_MODEL
-from rllm.rewards import RewardConfig, RewardFn, RewardInput, RewardOutput, RewardType
-from rllm.rewards.math_utils.utils import extract_answer, grade_answer_sympy, grade_answer_mathd
+from .globals import THOUGHT_DELIMITER_START, THOUGHT_DELIMITER_END, OAI_RM_MODEL
+from .reward_types import RewardConfig, RewardFn, RewardInput, RewardOutput, RewardType
+from .math_utils.utils import extract_answer, grade_answer_sympy, grade_answer_mathd
 
-from rllm.system_prompts import ORM_PROMPT
-from rllm.utils import call_gemini_llm, call_oai_rm_llm
+from .system_prompts import ORM_PROMPT
+# from .utils import call_gemini_llm, call_oai_rm_llm
 import json 
 
 ORM_USER_TEMPLATE = """
@@ -77,32 +77,32 @@ class RewardMathFn(RewardFn):
                     reward += self.config.toolcall_bonus
                 return RewardOutput(reward=reward, is_correct=True)
 
-        # If latex heuristics fail and ORM is enabled, use LLM as ORM to evaluate correctness
-        if self.config.use_math_orm:
+        # # If latex heuristics fail and ORM is enabled, use LLM as ORM to evaluate correctness
+        # if self.config.use_math_orm:
             
-            for ground_truth in processed_ground_truths:
+        #     for ground_truth in processed_ground_truths:
                 
-                try:
-                    orm_response = call_gemini_llm(
-                        system_prompt=ORM_PROMPT,
-                        prompt=ORM_USER_TEMPLATE.format(problem=problem, answer_1=model_answer, answer_2=ground_truth),
-                        temperature=0.0,
-                    )
+        #         try:
+        #             orm_response = call_gemini_llm(
+        #                 system_prompt=ORM_PROMPT,
+        #                 prompt=ORM_USER_TEMPLATE.format(problem=problem, answer_1=model_answer, answer_2=ground_truth),
+        #                 temperature=0.0,
+        #             )
 
-                    if "[[YES]]" in orm_response:
-                        return RewardOutput(reward=self.config.correct_reward, is_correct=True)
-                except Exception as e:
-                    print ("Error calling Gemini ORM, trying OAI RM")
-                    orm_response = call_oai_rm_llm(
-                        system_prompt=ORM_PROMPT,
-                        prompt=ORM_USER_TEMPLATE.format(problem=problem, answer_1=model_answer, answer_2=ground_truth),
-                        temperature=0.0,
-                        model_id=OAI_RM_MODEL,
-                    )
+        #             if "[[YES]]" in orm_response:
+        #                 return RewardOutput(reward=self.config.correct_reward, is_correct=True)
+        #         except Exception as e:
+        #             print ("Error calling Gemini ORM, trying OAI RM")
+        #             orm_response = call_oai_rm_llm(
+        #                 system_prompt=ORM_PROMPT,
+        #                 prompt=ORM_USER_TEMPLATE.format(problem=problem, answer_1=model_answer, answer_2=ground_truth),
+        #                 temperature=0.0,
+        #                 model_id=OAI_RM_MODEL,
+        #             )
                     
-                    if "[[YES]]" in orm_response:
-                        return RewardOutput(reward=self.config.correct_reward, is_correct=True)
-                    continue
+        #             if "[[YES]]" in orm_response:
+        #                 return RewardOutput(reward=self.config.correct_reward, is_correct=True)
+        #             continue
                 
         return RewardOutput(reward=self.config.incorrect_reward, is_correct=False)
 

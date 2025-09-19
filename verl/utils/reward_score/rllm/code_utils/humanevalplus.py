@@ -5,7 +5,7 @@ import faulthandler
 from tempfile import TemporaryDirectory
 import platform
 
-from rllm.rewards.code_utils.utils import BASE_IMPORTS
+from .utils import BASE_IMPORTS
 
 CLI_ARG_SIZE_LIMIT = 1024 * 3
 
