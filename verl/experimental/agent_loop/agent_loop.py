@@ -114,15 +114,14 @@ class AsyncLLMServerManager:
             )
         except asyncio.CancelledError:
             output = await server.cancel_and_fetch_partial.remote(request_id)
-        finally:
-            async with self._lock:
-                for i, (w, (_, s)) in enumerate(self.weighted_servers):
-                    if s == server:
-                        self.weighted_servers[i][0] = max(0, w - 1)
-                        heapq.heapify(self.weighted_servers)
-                        break
-                self.inflight[server] = max(0, self.inflight[server]-1)
-            print('output!!!',output)
+        # finally:
+        async with self._lock:
+            for i, (w, (_, s)) in enumerate(self.weighted_servers):
+                if s == server:
+                    self.weighted_servers[i][0] = max(0, w - 1)
+                    heapq.heapify(self.weighted_servers)
+                    break
+            self.inflight[server] = max(0, self.inflight[server]-1)
         return output
 
 
@@ -388,7 +387,6 @@ class AgentLoopWorker:
             responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
-        print('start agentloop generation!!!!')
         config = self.config.actor_rollout_ref.rollout
         sampling_params = dict(
             temperature=config.temperature,
@@ -445,7 +443,6 @@ class AgentLoopWorker:
             kwargs = self.unfinished_kwargs[i]
             running.add(asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[i], i, stream=True, **kwargs)))
             next_idx += 1
-        
         unfinished_output_response_length_count = defaultdict(int)
         while True:
             wait_set = running | {stop_future}
@@ -461,7 +458,7 @@ class AgentLoopWorker:
                 for task in running:
                     task.cancel()      
                 unfinished_outputs = await asyncio.gather(*running, return_exceptions=True) 
-                for unfinished_output in unfinished_outputs:  
+                for unfinished_output in unfinished_outputs:
                     index = unfinished_output.index
                     prompt_ids = unfinished_output.prompt_ids
                     response_ids = unfinished_output.response_ids
@@ -562,7 +559,7 @@ class AgentLoopWorker:
         #   e.g., [1,1,1,1,1,1,1,(tool start),0,0(tool end),1,1,0,0,0,0]
         # - position_ids: sequential positions for tokens, starting at 0
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
-
+        # print('response_ids!!!!!',output.response_ids)
         prompt_output = self.tokenizer.pad(
             {"input_ids": output.prompt_ids},
             padding="max_length",

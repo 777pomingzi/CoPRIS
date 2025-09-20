@@ -168,7 +168,8 @@ class RolloutWorker(Worker):
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD, blocking=False)
     async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
-        return await self.rollout.cancel_and_fetch_partial(request_id)
+        ret = await self.rollout.cancel_and_fetch_partial(request_id)
+        return ret
     
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
     async def wake_up(self):

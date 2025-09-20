@@ -57,7 +57,8 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
       ray start --head --port=6379 --dashboard-host=0.0.0.0
       sleep 5
       ray status
-
+      export CUDA_LAUNCH_BLOCKING=1
+      export TORCH_USE_CUDA_DSA=1
       export GPUS_PER_NODE=$GPUS_PER_NODE
       export WORLD_SIZE=${SLURM_NNODES:-1}
       export NCCL_DEBUG=WARN
@@ -131,7 +132,7 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
         actor_rollout_ref.rollout.temperature=1.0 \
         actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
-        actor_rollout_ref.rollout.n=8 \
+        actor_rollout_ref.rollout.n=2 \
         actor_rollout_ref.rollout.val_kwargs.do_sample=True \
         actor_rollout_ref.rollout.val_kwargs.n=32 \
         actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
@@ -142,7 +143,7 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
         trainer.balance_batch=True \
         trainer.project_name="${PROJECT_NAME}" \
         trainer.experiment_name="${EXPERIMENT_NAME}" \
-        trainer.val_before_train=True \
+        trainer.val_before_train=False \
         trainer.n_gpus_per_node=${GPUS_PER_NODE} \
         trainer.nnodes=${WORLD_SIZE} \
         trainer.save_freq=20 \

@@ -1053,10 +1053,11 @@ class SGLangRollout(BaseRollout):
             last_tokens: list[int] = []
             stop = self._stops[request_id] = asyncio.Event()
             async for output in generator:
-                tokens = output.outputs[0].token_ids
+                tokens = output["output_ids"]
                 last_tokens = tokens
                 self._latest[request_id] = last_tokens
                 if stop.is_set():
+                    print('request_id!!!',request_id)
                     await self._engine.abort_request(request_id)
                     break
             if not stop.is_set():
@@ -1066,6 +1067,7 @@ class SGLangRollout(BaseRollout):
 
         # print(last_tokens)
         return last_tokens
+    
     async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
         if ev := self._stops.get(request_id):
             ev.set()
