@@ -3,8 +3,8 @@
 #SBATCH --output=output_%j.log
 #SBATCH --error=error_%j.log
 #SBATCH --account=test
-#SBATCH --partition=TEST1_SCY
-#SBATCH --nodelist=g[48,49]
+#SBATCH --partition=TEST1
+#SBATCH --nodelist=g[81,82]
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
@@ -57,8 +57,6 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
       ray start --head --port=6379 --dashboard-host=0.0.0.0
       sleep 5
       ray status
-      export CUDA_LAUNCH_BLOCKING=1
-      export TORCH_USE_CUDA_DSA=1
       export GPUS_PER_NODE=$GPUS_PER_NODE
       export WORLD_SIZE=${SLURM_NNODES:-1}
       export NCCL_DEBUG=WARN
@@ -132,7 +130,7 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
         actor_rollout_ref.rollout.temperature=1.0 \
         actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
         actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
-        actor_rollout_ref.rollout.n=2 \
+        actor_rollout_ref.rollout.n=8 \
         actor_rollout_ref.rollout.val_kwargs.do_sample=True \
         actor_rollout_ref.rollout.val_kwargs.n=32 \
         actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
