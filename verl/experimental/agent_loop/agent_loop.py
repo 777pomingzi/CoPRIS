@@ -330,6 +330,11 @@ class AgentLoopWorker:
         self.model_name = "/".join(model_path.split("/")[-2:])
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
+        self.tokenizer_left = hf_tokenizer(local_path, trust_remote_code=True)
+        self.tokenizer_left.padding_side = "left"
+        self.tokenizer_right = hf_tokenizer(local_path, trust_remote_code=True)
+        self.tokenizer_right.padding_side = "right"
+
         self.processor = hf_processor(local_path, trust_remote_code=True)
         
         self.reward_manager_worker = RewardManagerWorker.options(
@@ -560,39 +565,37 @@ class AgentLoopWorker:
         # - position_ids: sequential positions for tokens, starting at 0
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
         # print('response_ids!!!!!',output.response_ids)
-        prompt_output = self.tokenizer.pad(
+        prompt_output = self.tokenizer_left.pad(
             {"input_ids": output.prompt_ids},
             padding="max_length",
             max_length=self.config.actor_rollout_ref.rollout.prompt_length,
             return_tensors="pt",
             return_attention_mask=True,
-            padding_side="left",
         )
         if prompt_output["input_ids"].dim() == 1:
             prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
             prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
 
 
-        response_output = self.tokenizer.pad(
+        response_output = self.tokenizer_right.pad(
             {"input_ids": output.response_ids},
             padding="max_length",
             max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
             return_tensors="pt",
             return_attention_mask=True,
-            padding_side="right"
         )
+
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
             response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
 
 
-        response_mask_output = self.tokenizer.pad(
+        response_mask_output = self.tokenizer_right.pad(
             {"input_ids": output.response_mask},
             padding="max_length",
             max_length=self.config.actor_rollout_ref.rollout.response_length if stop_event is not None else self.config.actor_rollout_ref.rollout.max_model_len,
             return_tensors="pt",
             return_attention_mask=False,
-            padding_side="right"
         )
         if response_mask_output["input_ids"].dim() == 1:
             response_mask_output["input_ids"] = response_mask_output["input_ids"].unsqueeze(0)
