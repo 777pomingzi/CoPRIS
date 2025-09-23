@@ -124,7 +124,7 @@ if [ "$SLURMD_NODENAME" == "$HEAD_NODE" ]; then
         actor_rollout_ref.rollout.max_num_batched_tokens=32768 \
         actor_rollout_ref.rollout.max_model_len=32768 \
         actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-        actor_rollout_ref.rollout.name=sglang \
+        actor_rollout_ref.rollout.name=vllm \
         actor_rollout_ref.rollout.mode=async \
         actor_rollout_ref.rollout.multi_turn.format=hermes \
         actor_rollout_ref.rollout.temperature=1.0 \

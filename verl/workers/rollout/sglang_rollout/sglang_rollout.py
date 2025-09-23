@@ -1057,8 +1057,8 @@ class SGLangRollout(BaseRollout):
                 last_tokens = tokens
                 self._latest[request_id] = last_tokens
                 if stop.is_set():
-                    # print('request_id!!!',request_id)
-                    await self._engine.abort_request(request_id)
+                    rid = output["meta_info"]['id']
+                    await self._engine.abort_request(rid)
                     break
             if not stop.is_set():
                 self._latest.pop(request_id)

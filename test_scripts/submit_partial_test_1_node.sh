@@ -3,13 +3,13 @@
 #SBATCH --output=output_%j.log      # 标准输出和错误日志文件名 (%j 表示作业ID)
 #SBATCH --error=error_%j.log        # 错误日志文件名
 #SBATCH --account=test
-#SBATCH --partition=TEST1_SCY                  # 分区名称      
-#SBATCH --nodelist=g[48,49]      
+#SBATCH --partition=TEST1_SCY   
+#SBATCH --nodelist=g[48,49]
 #SBATCH --gres=gpu:8                      # 每个节点请求 8 块 GPU
-#SBATCH --ntasks=1                        # 总任务数
+#SBATCH --ntasks=2                        # 总任务数
 #SBATCH --cpus-per-task=64                # 每个任务分配的CPU核心数
 #SBATCH --mem=1000G                       # 分配的内存大小
-#SBATCH --nodes=1                         # 使用 4 个节点
+#SBATCH --nodes=2                         # 使用 4 个节点
 #SBATCH --ntasks-per-node=1               # 每个节点启动 1 个任务
 
 
@@ -112,7 +112,7 @@ ray status
 WORLD_SIZE=\${SLURM_NTASKS}
 
 rollout_mode="async"
-rollout_name="sglang" # sglang or vllm
+rollout_name="vllm" # sglang or vllm
 return_raw_chat="True"
 
 if [ \$RANK -eq 0 ]; then
@@ -122,11 +122,11 @@ python3 -m verl.trainer.main_ppo \
     data.train_files="\$TRAIN_DATASET" \
     data.val_files="\$TEST_DATASET" \
     data.return_raw_chat=\$return_raw_chat \
-    ++data.gen_batch_size=128 \
-    data.train_batch_size=64 \
+    ++data.gen_batch_size=384 \
+    data.train_batch_size=256 \
     data.val_batch_size=4096 \
     data.max_prompt_length=1024 \
-    data.max_response_length=15360 \
+    data.max_response_length=31744 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     actor_rollout_ref.model.path=\$ACTOR_MODEL_PATH \
@@ -150,11 +150,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     ++actor_rollout_ref.rollout.filter_groups=False \
-    ++actor_rollout_ref.rollout.partial_rollout_pool_size=1024 \
+    ++actor_rollout_ref.rollout.partial_rollout_pool_size=2048 \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.max_num_batched_tokens=32768 \
     actor_rollout_ref.rollout.max_model_len=32768 \
+    actor_rollout_ref.rollout.max_num_seqs=2048 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=\$rollout_name \
     actor_rollout_ref.rollout.mode=\$rollout_mode \
@@ -170,7 +171,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     algorithm.kl_ctrl.kl_coef=0.000 \
-    trainer.logger=['console','tensorboard'] \
+    trainer.logger=['console','tensorboard','swanlab'] \
     trainer.balance_batch=True \
     trainer.project_name=\$PROJECT_NAME \
     trainer.experiment_name=\$EXPERIMENT_NAME \
