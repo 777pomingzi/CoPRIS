@@ -348,6 +348,7 @@ class AsyncvLLMServer(AsyncServerBase):
     async def generate(
         self,
         prompt_ids: list[int],
+        prompt_length: int,
         sampling_params: dict[str, Any],
         request_id: str,
         image_data: Optional[list[Any]] = None,
@@ -355,7 +356,7 @@ class AsyncvLLMServer(AsyncServerBase):
     ) -> list[int]:
         # Support training and validation at different length
         if stream:
-            max_tokens = self.response_length - len(prompt_ids)
+            max_tokens = self.response_length - len(prompt_ids) + prompt_length
         else:
             max_tokens = self.max_model_len - len(prompt_ids)
         sampling_params = SamplingParams(max_tokens=max_tokens, **sampling_params)

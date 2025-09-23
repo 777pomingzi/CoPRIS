@@ -50,10 +50,11 @@ class SingleTurnAgentLoop(AgentLoopBase):
             input_ids = prompt_ids + response_ids
             metrics = {}
             request_id = uuid4().hex
+            prompt_length = len(prompt_ids)
             with simple_timer("generate_sequences", metrics):
                 task = asyncio.create_task(
                     self.server_manager.generate(
-                    request_id=request_id, prompt_ids=input_ids, sampling_params=sampling_params, stream=stream
+                    request_id=request_id, prompt_ids=input_ids, prompt_length=prompt_length, sampling_params=sampling_params, stream=stream
                 ))
                 delta_ids = await task
                 response_ids = response_ids + delta_ids

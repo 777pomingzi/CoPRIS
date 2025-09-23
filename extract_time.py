@@ -2,7 +2,7 @@ import re
 import numpy as np
 import pandas as pd
 
-file_path = "/home/test/test06/qzk/verl-partial-agent-loop/output_302025.log"  # 改成你的实际路径
+file_path = "/home/test/test06/qzk/verl-partial-agent-loop/output_302029.log"  # 改成你的实际路径
 
 # 正则模式
 step_pattern = re.compile(r"step:(\d+)")

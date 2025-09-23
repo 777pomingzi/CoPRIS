@@ -99,6 +99,7 @@ class AsyncLLMServerManager:
         request_id,
         *,
         prompt_ids: list[int],
+        prompt_length: int,
         sampling_params: dict[str, Any],
         image_data: Optional[list[Any]] = None,
         stream: bool = False,
@@ -108,6 +109,7 @@ class AsyncLLMServerManager:
             output = await server.generate.remote(
                 request_id=request_id,
                 prompt_ids=prompt_ids,
+                prompt_length=prompt_length,
                 sampling_params=sampling_params,
                 image_data=image_data,
                 stream=stream,

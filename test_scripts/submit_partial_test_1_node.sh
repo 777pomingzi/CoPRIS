@@ -150,12 +150,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     ++actor_rollout_ref.rollout.filter_groups=False \
-    ++actor_rollout_ref.rollout.partial_rollout_pool_size=2048 \
+    ++actor_rollout_ref.rollout.partial_rollout_pool_size=1024 \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.max_num_batched_tokens=32768 \
     actor_rollout_ref.rollout.max_model_len=32768 \
-    actor_rollout_ref.rollout.max_num_seqs=2048 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=\$rollout_name \
     actor_rollout_ref.rollout.mode=\$rollout_mode \
