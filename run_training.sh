@@ -1,8 +1,6 @@
 #!/bin/bash
 set -x
 export VLLM_USE_V1=1
-export VLLM_CONFIGURE_LOGGING=1
-export VLLM_LOGGING_LEVEL=DEBUG
 
 export CPATH="/home/test1267/test-6/miniconda3/envs/verl-vllm/include:"
 export C_INCLUDE_PATH="/home/test1267/test-6/miniconda3/envs/verl-vllm/include:/home/test/test06/local/include:/home/test/test06/cuda-12.4/include:/home/test/test06/miniconda3/envs/bmtrain/include/:/home/test/test06/local/include:/home/test/test06/cuda-12.4/include:/home/test/test06/miniconda3/envs/bmtrain/include/:/home/test/test06/local/include:/home/test/test06/cuda-12.4/include:/home/test/test06/miniconda3/envs/bmtrain/include/:"

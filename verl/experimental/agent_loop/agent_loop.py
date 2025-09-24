@@ -42,7 +42,7 @@ from verl.workers.rollout.async_server import async_server_class
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
-
+import time
 
 class AsyncLLMServerManager:
     """
@@ -442,6 +442,7 @@ class AgentLoopWorker:
         
         stop_future = asyncio.create_task(stop_event.wait())
         
+        t0 = time.perf_counter()
         for i in range(len(batch)):
             self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"})
             self.unfinished_trajectory_info.append(trajectory_info[i])
@@ -450,6 +451,9 @@ class AgentLoopWorker:
             kwargs = self.unfinished_kwargs[i]
             running.add(asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[i], i, stream=True, **kwargs)))
             next_idx += 1
+        t1 = time.perf_counter()
+        print(f"[Timing] prepare and submit first pool tasks: {t1-t0:.3f}s")
+
         unfinished_output_response_length_count = defaultdict(int)
         while True:
             wait_set = running | {stop_future}
@@ -462,9 +466,12 @@ class AgentLoopWorker:
                     kwargs = self.unfinished_kwargs[index]
                     prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event=stop_event, finished=True, **kwargs)))
 
+                t2 = time.perf_counter()
                 for task in running:
                     task.cancel()      
                 unfinished_outputs = await asyncio.gather(*running, return_exceptions=True) 
+                t3 = time.perf_counter()
+                print(f"[Timing] cancel unfinished tasks: {t3-t2:.3f}s")
                 for unfinished_output in unfinished_outputs:
                     index = unfinished_output.index
                     prompt_ids = unfinished_output.prompt_ids
@@ -477,6 +484,9 @@ class AgentLoopWorker:
                     unfinished_output_response_length_count[len(unfinished_output.response_ids)]+=1
                     if len(unfinished_output.response_ids) != 0:
                         prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
+                    t4 = time.perf_counter()
+                
+                print(f"[Timing] submit_unfinished_task_internal_output_preparation: {t5-t4:.3f}s")
                 break   
                     
             for task in done:
@@ -493,8 +503,135 @@ class AgentLoopWorker:
         self.unfinished_kwargs = unfinished_kwargs+self.unfinished_kwargs[next_idx:]
         self.unfinished_trajectory_info = unfinished_trajectory_info+self.unfinished_trajectory_info[next_idx:]
         outputs = await asyncio.gather(*prepare_running)
+        t5 = time.perf_counter()
+        print(f"[Timing] prepare_unfinished_task_internal_output: {t5-t4:.3f}s")
         output = self._postprocess(outputs)
+        t6 = time.perf_counter()
+        print(f"[Timing] dataset postprocess: {t6-t5:.3f}s")
         return output
+    
+    # async def generate_sequences(self, batch: DataProto) -> DataProto:
+    #     """Generate sequences from agent loop.
+
+    #     Args:
+    #         batch (DataProto): Input batch.
+
+    #     Returns:
+    #         DataProto: Output batch.
+    #         - prompts: [bsz, prompt_length], prompt token ids from dataset.
+    #         - responses: [bsz, response_length], output token ids include response tokens
+    #           from LLM generation and observation tokens from tool_calls.
+    #         - response_mask: [bsz, response_length], 1 for LLM generated tokens, 0 for observation/padding tokens.
+    #         - input_ids: [bsz, prompt_length + response_length], whole sequence token ids, including prompt tokens
+    #           and response tokens.
+    #         - attention_mask: [bsz, prompt_length + response_length], 0 for padding tokens, 1 for other tokens.
+    #         - position_ids: [bsz, prompt_length + response_length], incremental position ids.
+
+    #         For multi-turn conversations:
+    #         responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
+    #         response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
+    #     """
+    #     config = self.config.actor_rollout_ref.rollout
+    #     sampling_params = dict(
+    #         temperature=config.temperature,
+    #         top_p=config.top_p,
+    #         repetition_penalty=1.0,
+    #     )
+
+    #     # override sampling params for validation
+    #     if batch.meta_info.get("validate", False):
+    #         sampling_params["top_p"] = config.val_kwargs.top_p
+    #         sampling_params["temperature"] = config.val_kwargs.temperature
+
+    #     # by default, we assume it's a single turn agent
+    #     if "agent_name" not in batch.non_tensor_batch:
+    #         batch.non_tensor_batch["agent_name"] = np.array(["single_turn_agent"] * len(batch), dtype=object)
+
+    #     if "index" in batch.non_tensor_batch:
+    #         index = batch.non_tensor_batch["index"]
+    #     else:
+    #         index = np.arange(len(batch))
+
+
+    #     trajectory_info = await get_trajectory_info(
+    #         batch.meta_info.get("global_steps", -1), index, batch.meta_info.get("validate", False)
+    #     )
+        
+    #     if batch.meta_info.get("validate", False):
+    #         tasks = []
+    #         for i in range(len(batch)):
+    #             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"}
+    #             tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], i, stream=False, **kwargs)))
+    #         outputs = await asyncio.gather(*tasks)
+    #         prepare_tasks = []
+    #         for output in outputs:
+    #             prepare_tasks.append(asyncio.create_task(self.prepare_internal_output(output, stop_event=None)))
+    #         outputs = await asyncio.gather(*prepare_tasks)
+    #         output = self._postprocess(outputs)
+    #         return output
+
+    #     stop_event = asyncio.Event()  
+    #     next_idx = 0
+    #     running  = set()
+    #     prepare_running = set()
+    #     unfinished_kwargs = []
+    #     unfinished_trajectory_info = []
+        
+    #     stop_future = asyncio.create_task(stop_event.wait())
+        
+    #     for i in range(len(batch)):
+    #         self.unfinished_kwargs.append({k: v[i] for k, v in batch.non_tensor_batch.items() if k != "index"})
+    #         self.unfinished_trajectory_info.append(trajectory_info[i])
+
+    #     for i in range(min(self.partial_rollout_pool_size, len(self.unfinished_kwargs))):
+    #         kwargs = self.unfinished_kwargs[i]
+    #         running.add(asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[i], i, stream=True, **kwargs)))
+    #         next_idx += 1
+    #     unfinished_output_response_length_count = defaultdict(int)
+    #     while True:
+    #         wait_set = running | {stop_future}
+    #         done, running = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+            
+    #         if stop_future in done:
+    #             for task in [x for x in done if x is not stop_future]:
+    #                 output = task.result()
+    #                 index = output.index
+    #                 kwargs = self.unfinished_kwargs[index]
+    #                 prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event=stop_event, finished=True, **kwargs)))
+
+    #             for task in running:
+    #                 task.cancel()      
+    #             unfinished_outputs = await asyncio.gather(*running, return_exceptions=True) 
+    #             for unfinished_output in unfinished_outputs:
+    #                 index = unfinished_output.index
+    #                 prompt_ids = unfinished_output.prompt_ids
+    #                 response_ids = unfinished_output.response_ids
+    #                 kwargs = self.unfinished_kwargs[index]
+    #                 kwargs['prompt_ids'] = prompt_ids
+    #                 kwargs['response_ids'] = response_ids
+    #                 unfinished_kwargs.append(kwargs)
+    #                 unfinished_trajectory_info.append(self.unfinished_trajectory_info[index])
+    #                 unfinished_output_response_length_count[len(unfinished_output.response_ids)]+=1
+    #                 if len(unfinished_output.response_ids) != 0:
+    #                     prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
+    #             break   
+                    
+    #         for task in done:
+    #             output = task.result()
+    #             if next_idx < len(self.unfinished_kwargs) and not stop_event.is_set():
+    #                 kwargs = self.unfinished_kwargs[next_idx]
+    #                 task = asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[next_idx], next_idx, stream=True, **kwargs))
+    #                 running.add(task)
+    #                 next_idx += 1
+    #             index = output.index
+    #             kwargs = self.unfinished_kwargs[index]
+    #             prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event=stop_event, finished=True, **kwargs)))
+
+    #     self.unfinished_kwargs = unfinished_kwargs+self.unfinished_kwargs[next_idx:]
+    #     self.unfinished_trajectory_info = unfinished_trajectory_info+self.unfinished_trajectory_info[next_idx:]
+    #     outputs = await asyncio.gather(*prepare_running)
+    #     output = self._postprocess(outputs)
+    #     return output
     
     async def _run_agent_loop(
         self,
