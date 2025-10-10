@@ -81,5 +81,4 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 index=index,
                 metrics=metrics,
             )
-            # print('single_agent_loop_output!!!!',output.response_ids)
             return output
