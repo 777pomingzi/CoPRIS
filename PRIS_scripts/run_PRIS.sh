@@ -10,25 +10,27 @@ export TEST_DATASET='your_test_dataset_path'
 export ACTOR_MODEL_PATH='your_model_path'
 export PROJECT_PATH='your_project_path'
 export CKPT_PATH=${PROJECT_PATH}/checkpoints
+mkdir -p "$CKPT_PATH" || true
 
+export MAX_CONCURRENCY_POOL_SIZE=1024
+export DYNAMIC_SAMPLING=false
 
 
 rollout_mode="async"
 rollout_name="vllm" # sglang or vllm
-return_raw_chat="True"
+return_raw_chat=True
 
-if [ $RANK -eq 0 ]; then
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
     data.train_files="$TRAIN_DATASET" \
     data.val_files="$TEST_DATASET" \
     data.return_raw_chat=$return_raw_chat \
-    ++data.gen_batch_size=384 \
-    data.train_batch_size=256 \
+    ++data.gen_batch_size=128 \
+    data.train_batch_size=64 \
     data.val_batch_size=4096 \
     data.max_prompt_length=1024 \
-    data.max_response_length=31744 \
+    data.max_response_length=15360 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     actor_rollout_ref.model.path=$ACTOR_MODEL_PATH \
@@ -51,8 +53,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    ++actor_rollout_ref.rollout.filter_groups=False \
-    ++actor_rollout_ref.rollout.partial_rollout_pool_size=1024 \
+    ++actor_rollout_ref.rollout.filter_groups=$DYNAMIC_SAMPLING \
+    ++actor_rollout_ref.rollout.partial_rollout_pool_size=$MAX_CONCURRENCY_POOL_SIZE \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.max_num_batched_tokens=32768 \
@@ -62,17 +64,15 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.mode=$rollout_mode \
     actor_rollout_ref.rollout.multi_turn.format=hermes \
     actor_rollout_ref.rollout.temperature=1.0 \
-    actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=32 \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.6 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     algorithm.kl_ctrl.kl_coef=0.000 \
-    trainer.logger=['console','tensorboard','swanlab'] \
+    trainer.logger=console \
     trainer.balance_batch=True \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
@@ -83,6 +83,4 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=20 \
     trainer.default_hdfs_dir=null \
     trainer.total_epochs=20 \
-    trainer.default_local_dir="$CKPT_PATH/$PROJECT_NAME/$EXPERIMENT_NAME"
-    "$@" 
-fi
+    trainer.default_local_dir="$CKPT_PATH/$PROJECT_NAME/$EXPERIMENT_NAME" $@ 

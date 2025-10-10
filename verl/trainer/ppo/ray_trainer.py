@@ -1137,7 +1137,7 @@ class RayPPOTrainer:
                     if "response_mask" not in gen_batch_output.batch.keys():
                         gen_batch_output.batch["response_mask"] = compute_response_mask(gen_batch_output)
 
-                    # recompute old_log_probs
+                    # recompute old_log_probs and store in buffer
                     with marked_timer("old_log_prob", timing_raw, color="blue"):
                         gen_batch_output, pad_indices = pad_dataproto_to_divisor_with_indices(gen_batch_output, self.actor_rollout_wg.world_size)
 
