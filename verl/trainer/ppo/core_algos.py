@@ -781,9 +781,7 @@ def compute_policy_loss(
         + f" but get the value: {clip_ratio_c}."
     )
 
-    # negative_approx_kl = log_prob - old_log_prob
-    # used for rm importance sampling
-    negative_approx_kl = log_prob - log_prob.detach()
+    negative_approx_kl = log_prob - old_log_prob
     # Clamp negative_approx_kl for stability
     negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
     ratio = torch.exp(negative_approx_kl)
