@@ -40,7 +40,7 @@ This repository includes code, models, and datasets to reproduce the results pre
 
 ### 4. Model Evaluation
 
-Our repository now supports differing response lengths between training and evaluation, as well as performing evaluations during the training process. You can configure the evaluation response length via the max_model_len in run_PRIS.sh, and adjust the evaluation frequency using the test_freq.
+Our repository now supports differing response lengths between training and evaluation, as well as performing evaluations during the training process. You can configure the evaluation response length via the **max_model_len** in run_PRIS.sh, and adjust the evaluation frequency using the **test_freq**.
 
 ## Evaluation Results
 
