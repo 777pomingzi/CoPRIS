@@ -7,7 +7,7 @@ PRIS (Partial Rollout with Importance Sampling) is a reinforcement learning (RL)
 
 This repository includes code, models, and datasets to reproduce the results presented in the associated paper.
 
-![framework](partial_pic.pdf)
+![framework](partial_pic.png)
 
 ## Repository Links
 
@@ -47,6 +47,6 @@ Our repository now supports differing response lengths between training and eval
 If you successfully reproduce the above process and complete model training, you will obtain the following results:
 
 
-![scalability](scalability.pdf)
+![scalability](scalability.png)
 
 
