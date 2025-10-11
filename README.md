@@ -5,9 +5,9 @@
 
 PRIS (Partial Rollout with Importance Sampling) is a reinforcement learning (RL) training framework designed to enhance efficiency in large-scale RL post-training. It mitigates the long-tail problem from exceptionally long responses by early terminating rollout stages once sufficient trajectories are collected and reusing unfinished trajectories in subsequent rollouts, therefore eliminates idle computation during rollout. Additionally, PRIS incorporates cross-stage importance-sampling correction to ensure stable and unbiased optimization when mixing off-policy and on-policy trajectories. Together, these designs allow PRIS to achieve lossless throughput gains and scalable performance across model sizes and context lengths, paving the way for more efficient hybrid RL training systems.
 
-This repository includes code, models, and datasets to reproduce the results presented in the associated paper.
-
 ![framework](partial_pic.png)
+
+This repository includes code, models, and datasets to reproduce the results presented in the associated paper.
 
 ## Repository Links
 
