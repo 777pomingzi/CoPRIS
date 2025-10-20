@@ -46,7 +46,9 @@ Our repository now supports differing response lengths between training and eval
 
 If you successfully reproduce the above process and complete model training, you will obtain the following results:
 
-
+![main](main_results.png)
 ![scalability](scalability.png)
+
+
 
 
