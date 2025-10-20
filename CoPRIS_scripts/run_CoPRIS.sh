@@ -1,6 +1,6 @@
 #!/bin/bash
 set -x
-export PROJECT_NAME='PRIS'
+export PROJECT_NAME='CoPRIS'
 
 export EXPERIMENT_NAME=grpo_distill_r1_1.5_16k-n8-$(date +%Y-%m-%d_%H-%M-%S)
 

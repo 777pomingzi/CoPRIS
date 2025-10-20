@@ -1,9 +1,9 @@
-# PRIS
+# CoPRIS
 
 
 ## Overview
 
-PRIS (Partial Rollout with Importance Sampling) is a reinforcement learning (RL) training framework designed to enhance efficiency in large-scale RL post-training. It mitigates the long-tail problem from exceptionally long responses by early terminating rollout stages once sufficient trajectories are collected and reusing unfinished trajectories in subsequent rollouts, therefore eliminates idle computation during rollout. Additionally, PRIS incorporates cross-stage importance-sampling correction to ensure stable and unbiased optimization when mixing off-policy and on-policy trajectories. Together, these designs allow PRIS to achieve lossless throughput gains and scalable performance across model sizes and context lengths, paving the way for more efficient hybrid RL training systems.
+CoPRIS (Concurrency-Controlled Partial Rollout with Importance Sampling) is a reinforcement learning (RL) training framework designed to enhance efficiency in large-scale RL post-training. It mitigates the long-tail problem from exceptionally long responses by early terminating rollout stages once sufficient trajectories are collected and reusing unfinished trajectories in subsequent rollouts, therefore eliminates idle computation during rollout. Additionally, CoPRIS incorporates cross-stage importance-sampling correction to ensure stable and unbiased optimization when mixing off-policy and on-policy trajectories. Together, these designs allow CoPRIS to achieve lossless throughput gains and scalable performance across model sizes and context lengths, paving the way for more efficient hybrid RL training systems.
 
 ![framework](partial_pic.png)
 
@@ -30,17 +30,17 @@ This repository includes code, models, and datasets to reproduce the results pre
 
 ### 3. Model Training
 
-1. Modify the parameters in ./PRIS_scripts/run_PRIS.sh according to your training and system configuration.
+1. Modify the parameters in ./CoPRIS_scripts/run_CoPRIS.sh according to your training and system configuration.
 
-2. To train the **PRIS**, run the following command:
+2. To train the **CoPRIS**, run the following command:
 
    ```bash
-   bash ./PRIS_scripts/run_PRIS.sh
+   bash ./CoPRIS_scripts/run_CoPRIS.sh
    ```
 
 ### 4. Model Evaluation
 
-Our repository now supports differing response lengths between training and evaluation, as well as performing evaluations during the training process. You can configure the evaluation response length via the **max_model_len** in run_PRIS.sh, and adjust the evaluation frequency using the **test_freq**.
+Our repository now supports differing response lengths between training and evaluation, as well as performing evaluations during the training process. You can configure the evaluation response length via the **max_model_len** in run_CoPRIS.sh, and adjust the evaluation frequency using the **test_freq**.
 
 ## Evaluation Results
 
