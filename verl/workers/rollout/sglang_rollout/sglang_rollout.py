@@ -1027,10 +1027,10 @@ class SGLangRollout(BaseRollout):
         return await self._handle_engine_generate(generation_prompt_ids, sampling_params, image_data)
 
     async def _handle_engine_generate(
-        self, generation_prompt_ids: list[int], sampling_params: dict, request_id: str, image_data: Optional[list[Any]] = None, stream: bool =False,
+        self, generation_prompt_ids: list[int], sampling_params: dict, request_id: str, prompt_length: int, image_data: Optional[list[Any]] = None, stream: bool =False,
     ) -> list[int]:
         if stream:
-            max_new_tokens = self.config.response_length - len(generation_prompt_ids)
+            max_new_tokens = self.config.response_length - len(generation_prompt_ids) + prompt_length
         else:
             max_new_tokens = self.config.max_model_len - len(generation_prompt_ids)
 
@@ -1065,7 +1065,6 @@ class SGLangRollout(BaseRollout):
         finally:
             self._stops.pop(request_id)
 
-        # print(last_tokens)
         return last_tokens
     
     async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
@@ -1599,13 +1598,14 @@ class SGLangRollout(BaseRollout):
         prompt_ids: torch.Tensor,
         sampling_params: dict[str, Any],
         request_id: str,
+        prompt_length:int,
         image_data: Optional[list[Any]] = None,
         stream: bool =False,
     ) -> list[int]:
         """Generate sequence with token-in-token-out."""
         request_sampling_params = self.sampling_params.copy()
         request_sampling_params.update(sampling_params)
-        output = await self._handle_engine_generate(prompt_ids, request_sampling_params, request_id=request_id, image_data=image_data, stream=stream)
+        output = await self._handle_engine_generate(prompt_ids, request_sampling_params, request_id=request_id, prompt_length=prompt_length, image_data=image_data, stream=stream)
         return output
 
     async def wake_up(self):

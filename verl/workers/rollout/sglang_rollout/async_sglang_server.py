@@ -80,10 +80,11 @@ class AsyncSGLangServer(AsyncServerBase):
         prompt_ids: list[int],
         sampling_params: dict[str, Any],
         request_id: str,
+        prompt_length: int,
         image_data: Optional[list[Any]] = None,
         stream: bool =False,
     ) -> list[int]:
-        return await self.master_worker.generate.remote(prompt_ids=prompt_ids, sampling_params=sampling_params, request_id=request_id, image_data=image_data, stream=stream)
+        return await self.master_worker.generate.remote(prompt_ids=prompt_ids, sampling_params=sampling_params, request_id=request_id, prompt_length=prompt_length, image_data=image_data, stream=stream)
 
     async def cancel_and_fetch_partial(self, request_id: str) -> list[int]:
         return await self.master_worker.cancel_and_fetch_partial.remote(request_id)
