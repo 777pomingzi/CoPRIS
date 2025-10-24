@@ -116,15 +116,15 @@ class AsyncLLMServerManager:
             )
         except asyncio.CancelledError:
             output = await server.cancel_and_fetch_partial.remote(request_id)
-        finally:
-            async with self._lock:
-                for i, (w, (_, s)) in enumerate(self.weighted_servers):
-                    if s == server:
-                        self.weighted_servers[i][0] = max(0, w - 1)
-                        heapq.heapify(self.weighted_servers)
-                        break
-                self.inflight[server] = max(0, self.inflight[server]-1)
-            return output
+            
+        async with self._lock:
+            for i, (w, (_, s)) in enumerate(self.weighted_servers):
+                if s == server:
+                    self.weighted_servers[i][0] = max(0, w - 1)
+                    heapq.heapify(self.weighted_servers)
+                    break
+            self.inflight[server] = max(0, self.inflight[server]-1)
+        return output
 
 
 class AgentLoopMetrics(BaseModel):

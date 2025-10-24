@@ -69,16 +69,15 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 delta_ids = await task
                 response_ids = response_ids + delta_ids
 
-        finally:     
-            response_mask = [1] * len(response_ids)
+        response_mask = [1] * len(response_ids)
 
-            output = AgentLoopOutput(
-                prompt_ids=prompt_ids,
-                response_ids=response_ids[: self.response_length],
-                response_mask=response_mask[: self.response_length],
-                multi_modal_data={},
-                num_turns=2,
-                index=index,
-                metrics=metrics,
-            )
-            return output
+        output = AgentLoopOutput(
+            prompt_ids=prompt_ids,
+            response_ids=response_ids[: self.response_length],
+            response_mask=response_mask[: self.response_length],
+            multi_modal_data={},
+            num_turns=2,
+            index=index,
+            metrics=metrics,
+        )
+        return output
