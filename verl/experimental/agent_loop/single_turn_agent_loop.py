@@ -57,27 +57,27 @@ class SingleTurnAgentLoop(AgentLoopBase):
                     request_id=request_id, prompt_ids=input_ids, prompt_length=prompt_length, sampling_params=sampling_params, stream=stream
                 ))
                 delta_ids = await task
-                response_ids = response_ids + delta_ids
+
         except asyncio.CancelledError:
             try: task
             except NameError:
                 prompt_ids = kwargs.get("prompt_ids", [])
                 response_ids = kwargs.get("response_ids", [])
+                delta_ids = []
                 metrics = {}
             else:
                 task.cancel()
                 delta_ids = await task
-                response_ids = response_ids + delta_ids
-
-        response_mask = [1] * len(response_ids)
-
-        output = AgentLoopOutput(
-            prompt_ids=prompt_ids,
-            response_ids=response_ids[: self.response_length],
-            response_mask=response_mask[: self.response_length],
-            multi_modal_data={},
-            num_turns=2,
-            index=index,
-            metrics=metrics,
-        )
-        return output
+        finally:
+            response_ids = response_ids + delta_ids
+            response_mask = [1] * len(response_ids)
+            output = AgentLoopOutput(
+                prompt_ids=prompt_ids,
+                response_ids=response_ids[: self.response_length],
+                response_mask=response_mask[: self.response_length],
+                multi_modal_data={},
+                num_turns=2,
+                index=index,
+                metrics=metrics,
+            )
+            return output
