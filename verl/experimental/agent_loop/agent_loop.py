@@ -72,16 +72,6 @@ class AsyncLLMServerManager:
         # LRU cache to map request_id to server
         self.request_id_to_server = LRUCache(maxsize=max_cache_size)
 
-    # def _choose_server(self, request_id: str) -> ray.actor.ActorHandle:
-    #     # TODO: implement server pressure awareness load balancing
-    #     if request_id in self.request_id_to_server:
-    #         return self.request_id_to_server[request_id]
-
-    #     server = self.weighted_serveres[0][1][1]
-    #     self.weighted_serveres[0][0] += 1
-    #     heapq.heapreplace(self.weighted_serveres, self.weighted_serveres[0])
-    #     self.request_id_to_server[request_id] = server
-    #     return server
 
     def _choose_server(self, request_id: str) -> ray.actor.ActorHandle:
         if request_id in self.request_id_to_server:
@@ -92,6 +82,19 @@ class AsyncLLMServerManager:
         heapq.heapreplace(self.weighted_servers, self.weighted_servers[0])
         self.request_id_to_server[request_id] = server
         return server
+    def _reset_server_state(self) -> ray.actor.ActorHandle:
+        self.weighted_servers = [[0, (hash(server), server)] for server in self.server_handles]
+        heapq.heapify(self.weighted_servers)
+        self.inflight = defaultdict(int)
+    
+    async def _cleanup_server_state(self, server) -> None:
+        async with self._lock:
+            for i, (w, (_, s)) in enumerate(self.weighted_servers):
+                if s == server:
+                    self.weighted_servers[i][0] = max(0, w - 1)
+                    heapq.heapify(self.weighted_servers)
+                    break
+            self.inflight[server] = max(0, self.inflight[server] - 1)
 
     @rollout_trace_op
     async def generate(
@@ -104,6 +107,7 @@ class AsyncLLMServerManager:
         image_data: Optional[list[Any]] = None,
         stream: bool = False,
     ) -> list[int]:
+        output = None
         try:
             server = self._choose_server(request_id)
             output = await server.generate.remote(
@@ -114,17 +118,11 @@ class AsyncLLMServerManager:
                 image_data=image_data,
                 stream=stream,
             )
+            await self._cleanup_server_state(server)
         except asyncio.CancelledError:
-            output = await server.cancel_and_fetch_partial.remote(request_id)
-        finally:
-            async with self._lock:
-                for i, (w, (_, s)) in enumerate(self.weighted_servers):
-                    if s == server:
-                        self.weighted_servers[i][0] = max(0, w - 1)
-                        heapq.heapify(self.weighted_servers)
-                        break
-                self.inflight[server] = max(0, self.inflight[server]-1)
-            return output
+            if output is None:
+                output = await server.cancel_and_fetch_partial.remote(request_id)
+        return output
 
 
 class AgentLoopMetrics(BaseModel):
@@ -450,7 +448,6 @@ class AgentLoopWorker:
             kwargs = self.unfinished_kwargs[i]
             running.add(asyncio.create_task(self._run_agent_loop(sampling_params, self.unfinished_trajectory_info[i], i, stream=True, **kwargs)))
             next_idx += 1
-        unfinished_output_response_length_count = defaultdict(int)
         while True:
             wait_set = running | {stop_future}
             done, running = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
@@ -474,7 +471,6 @@ class AgentLoopWorker:
                     kwargs['response_ids'] = response_ids
                     unfinished_kwargs.append(kwargs)
                     unfinished_trajectory_info.append(self.unfinished_trajectory_info[index])
-                    unfinished_output_response_length_count[len(unfinished_output.response_ids)]+=1
                     if len(unfinished_output.response_ids) != 0:
                         prepare_running.add(asyncio.create_task(self.prepare_internal_output(unfinished_output, stop_event=stop_event, finished=False, **kwargs)))
                 break   
@@ -489,7 +485,7 @@ class AgentLoopWorker:
                 index = output.index
                 kwargs = self.unfinished_kwargs[index]
                 prepare_running.add(asyncio.create_task(self.prepare_internal_output(output, stop_event=stop_event, finished=True, **kwargs)))
-
+        self.server_manager._reset_server_state()
         self.unfinished_kwargs = unfinished_kwargs+self.unfinished_kwargs[next_idx:]
         self.unfinished_trajectory_info = unfinished_trajectory_info+self.unfinished_trajectory_info[next_idx:]
         outputs = await asyncio.gather(*prepare_running)
@@ -531,20 +527,8 @@ class AgentLoopWorker:
                 return output
 
             except asyncio.CancelledError:
-                try: task
-                except NameError:
-                    output = AgentLoopOutput(
-                        prompt_ids=[],
-                        response_ids=[],
-                        response_mask=[],
-                        multi_modal_data={},
-                        num_turns=0,
-                        index=index,
-                        metrics={},
-                    )
-                else:
-                    task.cancel()
-                    output = await task
+                task.cancel()
+                output = await task
                 return output
 
                 

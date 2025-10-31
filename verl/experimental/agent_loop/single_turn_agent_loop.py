@@ -35,41 +35,17 @@ class SingleTurnAgentLoop(AgentLoopBase):
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
 
     async def run(self, sampling_params: dict[str, Any], index:int, stream: bool = False, **kwargs) -> AgentLoopOutput:
-        try:
-            prompt_ids = kwargs.get("prompt_ids", [])
-            response_ids = kwargs.get("response_ids", [])
+        prompt_ids = kwargs.get("prompt_ids", [])
+        response_ids = kwargs.get("response_ids", [])
+        delta_ids: list[int] = []  
+        request_id = uuid4().hex
+        metrics = {}
+        task: asyncio.Task | None = None
 
-            if len(prompt_ids) == 0:
-                messages = list(kwargs["raw_prompt"])
-                prompt_ids = await self.loop.run_in_executor(
-                    None,
-                    lambda: self.tokenizer.apply_chat_template(
-                        messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
-                    ),
-                )
-            input_ids = prompt_ids + response_ids
-            metrics = {}
-            request_id = uuid4().hex
-            prompt_length = len(prompt_ids)
-            with simple_timer("generate_sequences", metrics):
-                task = asyncio.create_task(
-                    self.server_manager.generate(
-                    request_id=request_id, prompt_ids=input_ids, prompt_length=prompt_length, sampling_params=sampling_params, stream=stream
-                ))
-                delta_ids = await task
-
-        except asyncio.CancelledError:
-            try: task
-            except NameError:
-                prompt_ids = kwargs.get("prompt_ids", [])
-                response_ids = kwargs.get("response_ids", [])
-                delta_ids = []
-                metrics = {}
-            else:
-                task.cancel()
-                delta_ids = await task
-        finally:
-            response_ids = response_ids + delta_ids
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        if len(response_ids) >= self.response_length or (
+            eos_token_id is not None and len(response_ids) > 0 and response_ids[-1] == eos_token_id
+        ):
             response_mask = [1] * len(response_ids)
             output = AgentLoopOutput(
                 prompt_ids=prompt_ids,
@@ -81,3 +57,38 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 metrics=metrics,
             )
             return output
+        
+        try:
+            if len(prompt_ids) == 0:
+                messages = list(kwargs["raw_prompt"])
+                prompt_ids = await self.loop.run_in_executor(
+                    None,
+                    lambda: self.tokenizer.apply_chat_template(
+                        messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                    ),
+                )
+            input_ids = prompt_ids + response_ids
+            prompt_length = len(prompt_ids)
+            with simple_timer("generate_sequences", metrics):
+                task = asyncio.create_task(
+                    self.server_manager.generate(
+                    request_id=request_id, prompt_ids=input_ids, prompt_length=prompt_length, sampling_params=sampling_params, stream=stream
+                ))
+                delta_ids = await task
+        except asyncio.CancelledError:
+            if task is not None:
+                task.cancel()
+                delta_ids = await task
+
+        response_ids = response_ids + delta_ids
+        response_mask = [1] * len(response_ids)
+        output = AgentLoopOutput(
+            prompt_ids=prompt_ids,
+            response_ids=response_ids[: self.response_length],
+            response_mask=response_mask[: self.response_length],
+            multi_modal_data={},
+            num_turns=2,
+            index=index,
+            metrics=metrics,
+        )
+        return output
